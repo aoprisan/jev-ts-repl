@@ -15,6 +15,8 @@ import type { Question } from "../typesafe/questions.js";
 import { questionToJson } from "../typesafe/questions.js";
 import type { Color, Line, Span } from "../tui/style.js";
 import { line, span } from "../tui/style.js";
+import type { Estimate, Rates } from "./cost.js";
+import { formatRates, priceEstimate, usd } from "./cost.js";
 
 export const NOUL: Color = "cyan";
 export const CHOICE: Color = "magenta";
@@ -67,6 +69,11 @@ function fixed(n: number, digits = 2): string {
 function padEnd(text: string, width: number): string {
   const len = [...text].length;
   return len >= width ? text : text + " ".repeat(width - len);
+}
+
+function padStart(text: string, width: number): string {
+  const len = [...text].length;
+  return len >= width ? text : " ".repeat(width - len) + text;
 }
 
 function confidenceSpan(c: number): Span {
@@ -158,6 +165,83 @@ export function answerLines(name: string, answer: Answer, threshold: number): Li
       );
     }
   }
+  return out;
+}
+
+/**
+ * The cost estimate as a small table: which question spends what, and — when rates are set — the
+ * money at the bottom. Tokens are estimated, so the numbers are a shape, not a bill. `hint` is how
+ * this host sets rates, since the terminal has `:cost` and the web has a dialog.
+ */
+export function costLines(
+  estimate: Estimate,
+  rates: Rates | undefined,
+  hint = "set a price to see the money: dollars per million tokens, input then output",
+): Line[] {
+  const names = [...estimate.questions.map((q) => q.name), "state", "envelope", "total"];
+  const pad = names.reduce((width, name) => Math.max(width, [...name].length), 0);
+  const row = (name: string, kind: string, input: string, output: string, style?: Color): Line =>
+    line([
+      span("  "),
+      span(padEnd(name, pad), style === undefined ? {} : { fg: style }),
+      span("  "),
+      dim(padEnd(kind, 7)),
+      span(padStart(input, 6)),
+      span(padStart(output, 6)),
+    ]);
+
+  const out: Line[] = [
+    line([
+      span("  "),
+      dim(padEnd("", pad)),
+      span("  "),
+      dim(padEnd("", 7)),
+      dim(padStart("in", 6)),
+      dim(padStart("out", 6)),
+    ]),
+  ];
+  for (const q of estimate.questions) {
+    out.push(
+      row(
+        q.name,
+        q.kind,
+        String(q.inputTokens),
+        q.assumed ? `~${q.outputTokens}` : String(q.outputTokens),
+        colorFor(q.kind),
+      ),
+    );
+  }
+  out.push(row("state", "", String(estimate.stateTokens), "·"));
+  out.push(
+    row("envelope", "", String(estimate.envelopeTokens), String(estimate.answerEnvelopeTokens)),
+  );
+  out.push(
+    line([
+      span("  "),
+      bold(padEnd("total", pad)),
+      span("  "),
+      dim(padEnd("", 7)),
+      bold(padStart(String(estimate.inputTokens), 6)),
+      bold(padStart(String(estimate.outputTokens), 6)),
+      dim(`   ${estimate.inputTokens + estimate.outputTokens} tokens per call`),
+    ]),
+  );
+
+  if (rates === undefined) {
+    out.push(line([span("    "), dim(`no rates set — ${hint}`)]));
+    return out;
+  }
+  const cost = priceEstimate(estimate, rates);
+  out.push(
+    line([
+      span("    "),
+      span(usd(cost.total), { fg: SCORE, bold: true }),
+      dim(" per call   ·   "),
+      span(usd(cost.total * 1000), { fg: SCORE }),
+      dim(" per 1,000 calls"),
+    ]),
+  );
+  out.push(line([span("    "), dim(`at ${formatRates(rates)}`)]));
   return out;
 }
 

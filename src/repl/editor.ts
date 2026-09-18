@@ -9,9 +9,9 @@ import type { ParsedSketch } from "./sketch.js";
 import { parse } from "./sketch.js";
 
 /** What the right-hand pane shows next to the page. */
-export type Preview = "json" | "answers" | "ts";
+export type Preview = "json" | "answers" | "ts" | "cost";
 
-export const PREVIEWS: readonly Preview[] = ["json", "answers", "ts"];
+export const PREVIEWS: readonly Preview[] = ["json", "answers", "ts", "cost"];
 
 function nextPreview(preview: Preview): Preview {
   const at = PREVIEWS.indexOf(preview);

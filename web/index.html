@@ -108,6 +108,7 @@
             <button data-preview="answers">Answers</button>
             <button data-preview="ts">TypeScript</button>
             <button data-preview="rust">Rust</button>
+            <button data-preview="cost">Cost</button>
           </div>
           <span class="grow"></span>
           <button id="copy" class="ghost">Copy</button>
@@ -162,6 +163,13 @@
       <label class="field">
         <span>confidence gate shown in answers and generated code</span>
         <input id="threshold-input" type="number" min="0" max="1" step="0.05" />
+      </label>
+      <label class="field">
+        <span
+          >price — dollars per million tokens, input/output, for the Cost tab. Blank counts tokens
+          without pricing them.</span
+        >
+        <input id="price-input" type="text" placeholder="0.20/1.00" spellcheck="false" />
       </label>
       <p class="hint">
         A browser can only call an API that allows this origin. If the call fails with a network

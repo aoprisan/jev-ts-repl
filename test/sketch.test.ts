@@ -266,6 +266,8 @@ describe("the editor", () => {
     ed.key(ctrl("p"));
     expect(ed.preview).toBe("ts");
     ed.key(ctrl("p"));
+    expect(ed.preview).toBe("cost");
+    ed.key(ctrl("p"));
     expect(ed.preview).toBe("json");
   });
 });
