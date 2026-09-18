@@ -139,6 +139,11 @@ npx --yes http-server site -p 8080   # or any static server
   page, because both go through the same parser.
 - **Share is a link.** `Share` puts the page in the URL fragment — the notation travels, the key
   never does.
+- **Nothing third-party runs on the page.** It ships a Content-Security-Policy that allows scripts,
+  styles and images from its own origin only; the one inline script is the import map, named by a
+  SHA-256 the build computes from it. Change the map without rebuilding and the browser refuses to
+  run it. (`frame-ancestors` cannot travel in a `<meta>` policy, so refusing to be framed is the
+  host's job.)
 
 `web/` holds the sources, `site/` is the build output, and the PWA is deployed to GitHub Pages by
 `.github/workflows/pages.yml` on every push to `main`.

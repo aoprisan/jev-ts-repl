@@ -52,8 +52,20 @@ cpSync(join(ROOT, "dist"), join(SITE, "core"), {
 // 2. The app.
 run("-p", "tsconfig.web.json");
 
-// 3. The static shell.
-for (const name of ["index.html", "styles.css", "manifest.webmanifest"]) {
+// 3. The static shell. The page carries its own Content-Security-Policy, and the only inline
+//    script it has is the import map — so the policy names that script by hash, computed here from
+//    what is actually between the tags. Change the map and the hash follows; get it wrong and the
+//    browser refuses to run it, which is the point.
+const html = readFileSync(join(ROOT, "web", "index.html"), "utf8");
+const inline = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html);
+if (!inline) throw new Error("web/index.html has no import map to hash");
+if (!html.includes("__IMPORTMAP_HASH__")) {
+  throw new Error("web/index.html has no __IMPORTMAP_HASH__ for the policy");
+}
+const inlineHash = `sha256-${createHash("sha256").update(inline[1], "utf8").digest("base64")}`;
+writeFileSync(join(SITE, "index.html"), html.replace("__IMPORTMAP_HASH__", inlineHash));
+
+for (const name of ["styles.css", "manifest.webmanifest"]) {
   cpSync(join(ROOT, "web", name), join(SITE, name));
 }
 cpSync(join(ROOT, "web", "icons"), join(SITE, "icons"), { recursive: true });

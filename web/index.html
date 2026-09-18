@@ -13,6 +13,18 @@
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <!--
+      Everything this page runs comes from this origin: no CDN, no fonts, no analytics. The policy
+      says so, so a key kept on the device cannot be read out by anything that slips in later. The
+      one inline script is the import map, allowed by the hash `npm run build:web` stamps in;
+      `connect-src https:` is wide because the API base URL is the reader's to set.
+      `frame-ancestors` is left out on purpose: a `<meta>` policy cannot carry it, so framing has
+      to be refused by the host's headers.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' '__IMPORTMAP_HASH__'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
     <script type="importmap">
       { "imports": { "jev-repl/core": "./core/core.js" } }
     </script>
@@ -145,7 +157,7 @@
       <div class="row">
         <button id="settings-save" class="primary">Save</button>
         <button id="settings-forget" class="ghost">Forget key</button>
-        <form method="dialog"><button class="ghost">Close</button></form>
+        <button id="settings-close" class="ghost">Close</button>
       </div>
     </dialog>
   </body>
