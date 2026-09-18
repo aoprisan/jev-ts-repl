@@ -1,0 +1,648 @@
+/* The terminal's palette and proportions, in a document that also has to work on a phone. */
+
+:root {
+  color-scheme: light dark;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --line: 1.45rem;
+
+  --bg: #fbfbfd;
+  --surface: #ffffff;
+  --sunken: #f2f3f7;
+  --ink: #12161c;
+  --muted: #5c6674;
+  --edge: #dfe3ea;
+  --accent: #2563a8;
+  --accent-ink: #ffffff;
+
+  --black: #2b3038;
+  --red: #b4242c;
+  --green: #1f7a3d;
+  --yellow: #8a6200;
+  --blue: #2554a8;
+  --magenta: #8f2f8f;
+  --cyan: #12707d;
+  --gray: #6b7482;
+  --darkGray: #8b93a1;
+  --lightRed: #cf3b45;
+  --lightGreen: #2b9350;
+  --lightYellow: #9c7300;
+  --lightBlue: #2f6fbf;
+  --lightMagenta: #a3459f;
+  --lightCyan: #16808e;
+  --white: #12161c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f14;
+    --surface: #121821;
+    --sunken: #0e131a;
+    --ink: #e6ebf2;
+    --muted: #93a0b1;
+    --edge: #222c39;
+    --accent: #5aa2f0;
+    --accent-ink: #06111f;
+
+    --black: #0b0f14;
+    --red: #ff6b6b;
+    --green: #56d68a;
+    --yellow: #e3c05c;
+    --blue: #6b9bf0;
+    --magenta: #d98fdc;
+    --cyan: #5fd2de;
+    --gray: #9aa6b4;
+    --darkGray: #6c7a8a;
+    --lightRed: #ff8a8a;
+    --lightGreen: #7ce3a6;
+    --lightYellow: #f2d47a;
+    --lightBlue: #8dbcff;
+    --lightMagenta: #eaa8ec;
+    --lightCyan: #86e6f0;
+    --white: #ffffff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  font-family: var(--sans);
+  font-size: 15px;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---------------------------------------------------------------- chrome */
+
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem max(0.75rem, env(safe-area-inset-left));
+  background: var(--surface);
+  border-bottom: 1px solid var(--edge);
+}
+
+footer.chrome {
+  border-bottom: 0;
+  border-top: 1px solid var(--edge);
+}
+
+.wordmark {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.grow {
+  flex: 1;
+}
+
+.pill {
+  font: 600 0.72rem/1 var(--mono);
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: var(--sunken);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.pill.live {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+button {
+  font-family: inherit;
+  font-size: 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+button.ghost {
+  background: transparent;
+}
+
+button.drop {
+  color: var(--muted);
+  border-color: transparent;
+  padding: 0.3rem 0.5rem;
+}
+
+.status {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+main {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.panel {
+  min-height: 0;
+  display: none;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem max(0.75rem, env(safe-area-inset-left)) 0.75rem
+    max(0.75rem, env(safe-area-inset-right));
+  overflow: auto;
+}
+
+body[data-tab="page"] [data-panel="page"],
+body[data-tab="build"] [data-panel="build"],
+body[data-tab="learn"] [data-panel="learn"],
+body[data-tab="preview"] [data-panel="preview"] {
+  display: flex;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+.legend {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.legend code,
+.panel-head code {
+  font-family: var(--mono);
+  background: var(--sunken);
+  border-radius: 4px;
+  padding: 0.05rem 0.25rem;
+}
+
+/* ---------------------------------------------------------------- the page editor */
+
+.editor {
+  flex: 1;
+  min-height: 12rem;
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.gutter {
+  width: 5.2rem;
+  flex: none;
+  padding: 0.6rem 0.35rem 0.6rem 0.6rem;
+  background: var(--sunken);
+  border-right: 1px solid var(--edge);
+  overflow: hidden;
+  font: 0.78rem / var(--line) var(--mono);
+  user-select: none;
+}
+
+.gutter-row {
+  display: flex;
+  justify-content: space-between;
+  height: var(--line);
+  white-space: nowrap;
+}
+
+.flag {
+  width: 0.6rem;
+}
+
+#page {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  resize: none;
+  padding: 0.6rem 0.75rem;
+  background: transparent;
+  color: var(--ink);
+  font: 0.86rem / var(--line) var(--mono);
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+
+#page:focus {
+  outline: none;
+}
+
+.problems {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.problem {
+  display: flex;
+  gap: 0.5rem;
+  text-align: left;
+  font-size: 0.78rem;
+  border-color: var(--red);
+  color: var(--ink);
+  background: transparent;
+}
+
+.problem-line {
+  font-family: var(--mono);
+  color: var(--red);
+  flex: none;
+}
+
+/* ---------------------------------------------------------------- the build form */
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+}
+
+.card header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card .pill {
+  cursor: default;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.field.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.field.inline select {
+  width: auto;
+  max-width: 20rem;
+}
+
+.field input,
+.field select,
+.field textarea {
+  font: 0.86rem / 1.5 var(--mono);
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--sunken);
+  color: var(--ink);
+  min-width: 0;
+  width: 100%;
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Narrow: the two halves of an option stack, with one remove button beside both. */
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  align-items: end;
+}
+
+.pair .field {
+  grid-column: 1;
+}
+
+.pair .drop {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+@media (min-width: 560px) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .pair .field:nth-of-type(2) {
+    grid-column: 2;
+  }
+
+  .pair .drop {
+    grid-row: 1;
+    align-self: end;
+  }
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.check {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  align-items: flex-start;
+}
+
+.empty,
+.note {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------- preview */
+
+.segmented {
+  display: flex;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.segmented button {
+  border: 0;
+  border-radius: 0;
+  font-size: 0.78rem;
+  background: transparent;
+}
+
+.segmented button.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 0.7rem;
+}
+
+.preview pre,
+.raw {
+  margin: 0;
+  font: 0.8rem / 1.5 var(--mono);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.answer {
+  margin-bottom: 0.6rem;
+}
+
+.line {
+  font: 0.8rem / 1.5 var(--mono);
+  white-space: pre;
+}
+
+.raw-body summary {
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+  margin-top: 0.6rem;
+}
+
+/* ---------------------------------------------------------------- lessons */
+
+.lesson h2 {
+  font-size: 1.05rem;
+  margin: 0.2rem 0;
+}
+
+.lesson p {
+  line-height: 1.55;
+  margin: 0.4rem 0;
+  max-width: 62ch;
+}
+
+.lesson .count {
+  font: 0.72rem var(--mono);
+  color: var(--muted);
+}
+
+.try {
+  font: 0.8rem / 1.5 var(--mono);
+  background: var(--sunken);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 0.5rem;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+.tabs {
+  display: flex;
+  border-top: 1px solid var(--edge);
+  background: var(--surface);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.tabs button {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  padding: 0.7rem 0.2rem;
+  color: var(--muted);
+  background: transparent;
+}
+
+.tabs button.on {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- dialog */
+
+dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 1rem;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+
+dialog h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+dialog p {
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0.4rem 0;
+}
+
+dialog .field,
+dialog .check {
+  margin: 0.6rem 0;
+}
+
+dialog form {
+  display: contents;
+}
+
+/* ---------------------------------------------------------------- wide screens */
+
+@media (min-width: 900px) {
+  main {
+    grid-template-columns: minmax(0, 1fr) minmax(22rem, 38%);
+  }
+
+  .tabs button[data-tab="preview"] {
+    display: none;
+  }
+
+  .tabs button {
+    flex: 0 0 auto;
+    padding: 0.55rem 1.2rem;
+  }
+
+  body[data-tab="preview"] [data-panel="page"] {
+    display: flex;
+  }
+
+  [data-panel="preview"] {
+    display: flex !important;
+    border-left: 1px solid var(--edge);
+  }
+}
+
+/* ---------------------------------------------------------------- the terminal palette */
+
+.bold {
+  font-weight: 700;
+}
+
+.reverse {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.c-black {
+  color: var(--black);
+}
+.c-red {
+  color: var(--red);
+}
+.c-green {
+  color: var(--green);
+}
+.c-yellow {
+  color: var(--yellow);
+}
+.c-blue {
+  color: var(--blue);
+}
+.c-magenta {
+  color: var(--magenta);
+}
+.c-cyan {
+  color: var(--cyan);
+}
+.c-gray {
+  color: var(--gray);
+}
+.c-darkGray {
+  color: var(--darkGray);
+}
+.c-lightRed {
+  color: var(--lightRed);
+}
+.c-lightGreen {
+  color: var(--lightGreen);
+}
+.c-lightYellow {
+  color: var(--lightYellow);
+}
+.c-lightBlue {
+  color: var(--lightBlue);
+}
+.c-lightMagenta {
+  color: var(--lightMagenta);
+}
+.c-lightCyan {
+  color: var(--lightCyan);
+}
+.c-white {
+  color: var(--white);
+}

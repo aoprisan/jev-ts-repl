@@ -82,11 +82,25 @@ export interface CallOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Node's environment, or nothing at all. The client runs in a browser too, where `process` does
+ * not exist and the key is passed in explicitly.
+ */
 function env(name: string): string | undefined {
-  const value = process.env[name];
+  const source: Record<string, string | undefined> | undefined =
+    typeof process === "undefined" ? undefined : process.env;
+  const value = source?.[name];
   if (value === undefined) return undefined;
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+/** What `x-typesafe-runtime` reports. Nothing about the browser but that it is one. */
+function runtime(): string {
+  if (typeof process !== "undefined" && process.versions?.node !== undefined) {
+    return `node ${process.version} (${process.platform}; ${process.arch})`;
+  }
+  return "browser";
 }
 
 function checkBaseUrl(url: string): void {
@@ -181,7 +195,7 @@ export class Client {
       accept: "application/json",
       "user-agent": ident,
       [SDK_HEADER]: ident,
-      [RUNTIME_HEADER]: `node ${process.version} (${process.platform}; ${process.arch})`,
+      [RUNTIME_HEADER]: runtime(),
     };
   }
 

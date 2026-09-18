@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>jev — shape a System One request</title>
+    <meta
+      name="description"
+      content="Write a rubric as one page of text, watch it become a typed request, and read the answers. Works offline; the key is optional."
+    />
+    <meta name="theme-color" content="#0b0f14" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      { "imports": { "jev-repl/core": "./core/core.js" } }
+    </script>
+    <script type="module" src="./app/main.js"></script>
+  </head>
+  <body data-tab="page">
+    <header class="chrome">
+      <span class="wordmark">jev</span>
+      <button id="mode" class="pill" title="where the answers come from">offline</button>
+      <span class="grow"></span>
+      <button id="share" class="ghost">Share</button>
+      <button id="settings-open" class="ghost">Key</button>
+    </header>
+
+    <main>
+      <section class="panel" data-panel="page">
+        <div class="panel-head">
+          <label class="field inline">
+            <span>preset</span>
+            <select id="preset">
+              <option value="">choose…</option>
+            </select>
+          </label>
+          <span class="grow"></span>
+          <span class="hint">state · <code>---</code> · questions</span>
+        </div>
+        <div class="editor">
+          <div id="gutter" class="gutter" aria-hidden="true"></div>
+          <textarea
+            id="page"
+            wrap="off"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+            aria-label="the request as one page of text"
+          ></textarea>
+        </div>
+        <div id="problems" class="problems" hidden></div>
+        <p class="legend">
+          <code>name?</code> yes/no · <code>name:</code> then <code>label = why</code> for a choice
+          or <code>low &lt; high</code> for a score · <code>name!</code> raw JSON ·
+          <code>#</code> comment · <code>@model</code>
+        </p>
+      </section>
+
+      <section class="panel" data-panel="build">
+        <label class="field">
+          <span>state — what the questions are about</span>
+          <textarea id="state" rows="4" aria-label="state"></textarea>
+        </label>
+        <div id="cards" class="cards"></div>
+        <div class="row">
+          <button class="ghost" data-add="noul">+ yes/no</button>
+          <button class="ghost" data-add="choice">+ choice</button>
+          <button class="ghost" data-add="score">+ score</button>
+        </div>
+        <p class="hint">Editing here rewrites the page, so comments and spacing are not kept.</p>
+      </section>
+
+      <section class="panel" data-panel="learn">
+        <div id="lesson" class="lesson"></div>
+      </section>
+
+      <section class="panel" data-panel="preview">
+        <div class="panel-head">
+          <div class="segmented">
+            <button data-preview="json" class="on">JSON</button>
+            <button data-preview="answers">Answers</button>
+            <button data-preview="ts">TypeScript</button>
+            <button data-preview="rust">Rust</button>
+          </div>
+          <span class="grow"></span>
+          <button id="copy" class="ghost">Copy</button>
+        </div>
+        <div id="preview" class="preview"></div>
+      </section>
+    </main>
+
+    <footer class="chrome">
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <button id="ask" class="primary">Ask</button>
+    </footer>
+
+    <nav class="tabs">
+      <button data-tab="page" class="on">Page</button>
+      <button data-tab="build">Build</button>
+      <button data-tab="preview">Preview</button>
+      <button data-tab="learn">Learn</button>
+    </nav>
+
+    <dialog id="settings">
+      <h2>Your key</h2>
+      <p>
+        Answers are simulated on this device until you add a key. With one, requests go straight
+        from this browser to the API — there is no server in between, and nothing is sent anywhere
+        else.
+      </p>
+      <label class="field">
+        <span>API key</span>
+        <input id="key-input" type="password" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="check">
+        <input id="remember-input" type="checkbox" />
+        <span
+          >Keep it on this device (stored in this browser, readable by anything that runs on this
+          page — leave it off on a shared machine)</span
+        >
+      </label>
+      <label class="field">
+        <span>base URL — blank for the default, or a proxy of your own</span>
+        <input
+          id="base-input"
+          type="url"
+          placeholder="https://api.typesafe.ai"
+          spellcheck="false"
+        />
+      </label>
+      <label class="field">
+        <span>model — blank for the default</span>
+        <input id="model-input" type="text" placeholder="jev-latest" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>confidence gate shown in answers and generated code</span>
+        <input id="threshold-input" type="number" min="0" max="1" step="0.05" />
+      </label>
+      <p class="hint">
+        A browser can only call an API that allows this origin. If the call fails with a network
+        error, that is CORS, not your key — point the base URL at a proxy you control.
+      </p>
+      <div class="row">
+        <button id="settings-save" class="primary">Save</button>
+        <button id="settings-forget" class="ghost">Forget key</button>
+        <form method="dialog"><button class="ghost">Close</button></form>
+      </div>
+    </dialog>
+  </body>
+</html>
