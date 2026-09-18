@@ -743,6 +743,7 @@ function wire(): void {
   modePill.addEventListener("click", openSettings);
   el<HTMLButtonElement>("settings-open").addEventListener("click", openSettings);
   el<HTMLButtonElement>("settings-save").addEventListener("click", saveSettingsDialog);
+  el<HTMLButtonElement>("settings-close").addEventListener("click", () => settingsDialog.close());
   el<HTMLButtonElement>("settings-forget").addEventListener("click", () => {
     forgetKey();
     state.key = undefined;

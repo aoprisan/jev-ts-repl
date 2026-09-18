@@ -52,8 +52,22 @@ cpSync(join(ROOT, "dist"), join(SITE, "core"), {
 // 2. The app.
 run("-p", "tsconfig.web.json");
 
-// 3. The static shell.
-for (const name of ["index.html", "styles.css", "manifest.webmanifest"]) {
+// 3. The static shell. The page carries its own Content-Security-Policy, so every inline script
+//    it has — the frame guard, the import map — is named in it by hash, computed here from what is
+//    actually between the tags. Edit one without rebuilding and the browser refuses to run it,
+//    which is the point.
+const html = readFileSync(join(ROOT, "web", "index.html"), "utf8");
+const inline = [...html.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/g)];
+if (inline.length === 0) throw new Error("web/index.html has no inline script to hash");
+if (!html.includes("__INLINE_HASHES__")) {
+  throw new Error("web/index.html has no __INLINE_HASHES__ for the policy");
+}
+const hashes = inline
+  .map((match) => `'sha256-${createHash("sha256").update(match[1], "utf8").digest("base64")}'`)
+  .join(" ");
+writeFileSync(join(SITE, "index.html"), html.replace("__INLINE_HASHES__", hashes));
+
+for (const name of ["styles.css", "manifest.webmanifest", "_headers"]) {
   cpSync(join(ROOT, "web", name), join(SITE, name));
 }
 cpSync(join(ROOT, "web", "icons"), join(SITE, "icons"), { recursive: true });

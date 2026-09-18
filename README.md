@@ -139,6 +139,21 @@ npx --yes http-server site -p 8080   # or any static server
   page, because both go through the same parser.
 - **Share is a link.** `Share` puts the page in the URL fragment — the notation travels, the key
   never does.
+- **Nothing third-party runs on the page.** It ships a Content-Security-Policy that allows scripts,
+  styles and images from its own origin only; the one inline script is the import map, named by a
+  SHA-256 the build computes from it. Change the map without rebuilding and the browser refuses to
+  run it.
+- **It will not run in a frame.** `frame-ancestors` cannot travel in a `<meta>` policy, so it is
+  handled twice: `site/_headers` sends `frame-ancestors 'none'`, `X-Frame-Options: DENY` and
+  friends on hosts that read that file (Cloudflare Pages, Netlify), and the page itself refuses to
+  build the app when `window.top !== window.self`, which covers hosts that send no headers —
+  GitHub Pages among them. A framer that also turns scripts off in the frame gets the static shell
+  with nothing wired to it. On a host you control, send the headers:
+
+  ```nginx
+  add_header Content-Security-Policy "frame-ancestors 'none'" always;
+  add_header X-Frame-Options DENY always;
+  ```
 
 `web/` holds the sources, `site/` is the build output, and the PWA is deployed to GitHub Pages by
 `.github/workflows/pages.yml` on every push to `main`.
