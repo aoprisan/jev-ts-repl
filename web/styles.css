@@ -68,6 +68,36 @@
   box-sizing: border-box;
 }
 
+/* Framed: the app is not drawn at all, only the refusal. */
+#framed {
+  display: none;
+  padding: 2rem max(1rem, env(safe-area-inset-left));
+  font-family: var(--sans);
+}
+
+#framed h1 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+#framed p {
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+#framed a {
+  color: var(--accent);
+}
+
+:root[data-framed] #framed {
+  display: block;
+}
+
+:root[data-framed] body > :not(#framed) {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;

@@ -16,21 +16,34 @@
     <!--
       Everything this page runs comes from this origin: no CDN, no fonts, no analytics. The policy
       says so, so a key kept on the device cannot be read out by anything that slips in later. The
-      one inline script is the import map, allowed by the hash `npm run build:web` stamps in;
-      `connect-src https:` is wide because the API base URL is the reader's to set.
-      `frame-ancestors` is left out on purpose: a `<meta>` policy cannot carry it, so framing has
-      to be refused by the host's headers.
+      inline scripts — the frame guard and the import map — are allowed by the hashes
+      `npm run build:web` stamps in; `connect-src https:` is wide because the API base URL is the
+      reader's to set. `frame-ancestors` cannot travel in a `<meta>` policy: `_headers` carries it
+      on hosts that send headers, and the guard below covers the ones that do not.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' '__IMPORTMAP_HASH__'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+      content="default-src 'self'; script-src 'self' __INLINE_HASHES__; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
     />
+    <script>
+      // Refuse to run in a frame. `frame-ancestors` says this properly, but a static host may not
+      // send headers, and a page that takes a key should not be clickable through someone else's.
+      if (window.top !== window.self) document.documentElement.setAttribute("data-framed", "");
+    </script>
     <script type="importmap">
       { "imports": { "jev-repl/core": "./core/core.js" } }
     </script>
     <script type="module" src="./app/main.js"></script>
   </head>
   <body data-tab="page">
+    <div id="framed" role="alert">
+      <h1>jev does not run in a frame</h1>
+      <p>
+        This page takes an API key, so it refuses to be embedded in another site.
+        <a id="framed-link" href="./" target="_top">Open it directly</a>.
+      </p>
+    </div>
+
     <header class="chrome">
       <span class="wordmark">jev</span>
       <button id="mode" class="pill" title="where the answers come from">offline</button>
