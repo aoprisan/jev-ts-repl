@@ -123,6 +123,25 @@ npm run build     # dist/, what npm publishes
 npm start         # run the REPL from source
 ```
 
+### Releasing
+
+The first release is published by hand, because npm can only attach a trusted publisher to a
+package that already exists:
+
+```sh
+npm login && npm publish
+```
+
+After that, set the trusted publisher on npmjs.com (the package → Settings → Trusted Publisher →
+repository `aoprisan/jev-ts-repl`, workflow `release.yml`). Every release after that is a tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+GitHub Actions then authenticates over OIDC — no npm token is stored anywhere — and npm attaches
+provenance automatically.
+
 This is a TypeScript port of the `jev-repl` crate in
 [aoprisan/typesafe-ai-rust-sdk](https://github.com/aoprisan/typesafe-ai-rust-sdk); the notation,
 lessons, presets and simulated answers are the same.

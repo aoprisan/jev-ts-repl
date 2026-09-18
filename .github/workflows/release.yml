@@ -1,11 +1,25 @@
 name: release
 # `v0.1.0` publishes the package to npm. Tag only after the version in package.json matches.
+#
+# Publishing is via npm trusted publishing (OIDC): GitHub Actions authenticates directly, so there
+# is no NPM_TOKEN to store, rotate or leak — and provenance is attested automatically.
+#
+# npm can only attach a trusted publisher to a package that already exists, so the very first
+# release is published by hand (`npm login && npm publish`). After that, configure the trusted
+# publisher on npmjs.com → the package → Settings → Trusted Publisher, with:
+#
+#   Organization or user: aoprisan
+#   Repository:           jev-ts-repl
+#   Workflow filename:    release.yml   (this file; the name must match exactly)
+#
+# Every release after the first one is then just a tag.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 permissions:
   contents: read
+  # What lets the runner mint the OIDC token npm trades for a short-lived publish credential.
   id-token: write
 jobs:
   publish:
@@ -17,6 +31,8 @@ jobs:
           node-version: "22"
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or newer; the npm bundled with Node 22 is older.
+      - run: npm install -g npm@latest
       - run: npm ci
       - name: Check the tag matches the manifest version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -31,6 +47,4 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --access public
