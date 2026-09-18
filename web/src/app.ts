@@ -633,6 +633,14 @@ async function ask(): Promise<void> {
 
 // ---------------------------------------------------------------- the learn tab
 
+/** Lesson commands the terminal answers by printing something this page shows as a tab. */
+const PREVIEW_COMMANDS: Readonly<Record<string, PreviewKind>> = {
+  ":json": "json",
+  ":ts": "ts",
+  ":rust": "rust",
+  ":cost": "cost",
+};
+
 function drawLesson(): void {
   const lesson = LESSONS[state.lesson];
   clear(lessonBox);
@@ -651,6 +659,19 @@ function drawLesson(): void {
             const page = parsed();
             if (!page.ok()) {
               say("fix the page's problems first");
+              return;
+            }
+            // A lesson that says `:ask` means the button this page already has.
+            if (lesson.tryThis === ":ask") {
+              void ask();
+              return;
+            }
+            // A lesson that points at something the terminal prints is a tab over here.
+            const tab = PREVIEW_COMMANDS[lesson.tryThis];
+            if (tab !== undefined) {
+              state.preview = tab;
+              show("preview");
+              draw();
               return;
             }
             const session = page.toSession();
