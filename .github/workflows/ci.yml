@@ -7,10 +7,11 @@ permissions:
   contents: read
 jobs:
   test:
+    # The versions the dev toolchain runs on: vitest 5 requires Node 22.12 or newer.
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: ["18.17", "20", "22"]
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,5 +23,26 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
-      # The published binary must at least start on every supported Node.
+
+  runtime:
+    # The package supports Node 18.17+ and has no dependencies, but its test runner does not go
+    # that low. So the oldest supported runtimes are checked against what actually ships.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["18.17", "20"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --version
       - run: node dist/cli.js --version
+      - run: node dist/cli.js --help
+      - run: node scripts/smoke.mjs
