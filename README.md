@@ -47,6 +47,27 @@ shapes can be learned offline.
 - `:build` opens a form for one question; `:json` shows the exact request body, `:last` the raw
   response, `:ts` the session as a program against this package (and `:rust` the same session
   against [`typesafe-ai-sdk`](https://crates.io/crates/typesafe-ai-sdk)).
+- `:cost` says what a call is about to cost, per question and on both sides of the wire — a choice
+  over eight labels comes back with eight probabilities, a score echoes its whole legend:
+
+  ```text
+                          in   out
+  department   choice     74    58
+  frustration  score      60    93
+  is_urgent    noul       32    19
+  state                   40     ·
+  envelope                22    16
+  total                  228   186   414 tokens per call
+    $0.000232 per call   ·   $0.2316 per 1,000 calls
+    at $0.20/$1.00 per Mtok
+  ```
+
+  Rates are yours to supply, because nothing here knows what a model charges: `:cost 0.20/1.00` is
+  dollars per million tokens, input then output, and `JEV_PRICE=0.20/1.00` sets the same at
+  startup. Without them the table counts tokens and stops there. Tokens are estimated from the
+  body — roughly four characters a token — so they are a shape, not an invoice; a live answer
+  carries the counted `usage`, and the REPL prices that instead.
+
 - `:save triage.jev` / `:open triage.jev` keep sessions as sketch pages; other paths use the
   request JSON.
 
@@ -107,13 +128,15 @@ buffer), so a session can be driven, rendered or snapshot-tested without a termi
 so it also runs in a browser or a worker:
 
 ```ts
-import { codegen, mock, sketch } from "jev-repl/core";
+import { codegen, cost, mock, sketch } from "jev-repl/core";
 
 const page = sketch.parse("A payout failed again.\n---\nis_urgent? The message conveys urgency");
 const session = page.toSession();
 session.requestJson("jev-latest"); // the exact body
 codegen.typescript(session, "jev-latest", 0.5); // the same session as code
 mock.answer(session.state, "is_urgent", session.questionsJson()["is_urgent"]); // offline answer
+cost.estimate(session, "jev-latest"); // tokens in, tokens out, per question
+cost.price(228, 186, { input: 0.2, output: 1 }).total; // dollars, at rates you supply
 ```
 
 ## On the web
@@ -137,6 +160,9 @@ npx --yes http-server site -p 8080   # or any static server
 - **A phone gets a form, a desktop gets the page.** Sketch notation is punctuation-heavy, which a
   soft keyboard is bad at, so the Build tab edits the same request as fields; both write the same
   page, because both go through the same parser.
+- **The Cost tab prices the page.** The same estimate the terminal prints, over whatever is on the
+  page right now; the rate pair lives beside the key, and stays on the device like the rest of the
+  settings.
 - **Share is a link.** `Share` puts the page in the URL fragment — the notation travels, the key
   never does.
 - **Nothing third-party runs on the page.** It ships a Content-Security-Policy that allows scripts,
@@ -164,7 +190,8 @@ Node 18.17 or newer (it uses the built-in `fetch`), and a terminal for the REPL 
 
 ## Commands
 
-`:help` lists them all inside; `:help concepts` explains noul, choice, score and confidence.
+`:help` lists them all inside; `:help concepts` explains noul, choice, score and confidence, and
+`:cost` what a call spends.
 Keys: Ctrl-T try the lesson's command · Ctrl-N next lesson · Ctrl-K sketch · Ctrl-B build ·
 PgUp/PgDn scroll · Ctrl-L clear · Ctrl-C quit.
 

@@ -13,7 +13,8 @@ import { kindAbout, sameField } from "./builder.js";
 import * as codegen from "./codegen.js";
 import type { Preview } from "./editor.js";
 import { PREVIEWS } from "./editor.js";
-import { ACCENT, answerLines, BAD, colorFor, DIM, dim, SCORE, WARN } from "./format.js";
+import * as cost from "./cost.js";
+import { ACCENT, answerLines, BAD, colorFor, costLines, DIM, dim, SCORE, WARN } from "./format.js";
 import * as highlight from "./highlight.js";
 import { LESSONS } from "./lessons.js";
 import * as mock from "./mock.js";
@@ -121,6 +122,21 @@ function panel(buffer: Buffer, area: Rect, app: App): void {
         ? json["type"]
         : "raw";
     lines.push(line([span("• ", { fg: colorFor(kind) }), span(name), dim(`  ${kind}`)]));
+  }
+
+  if (app.session.questions.length > 0) {
+    const estimate = cost.estimate(app.session, app.modelName());
+    const spent = app.rates === undefined ? undefined : cost.priceEstimate(estimate, app.rates);
+    lines.push(blankLine());
+    lines.push(line([span("cost", { fg: ACCENT, bold: true }), dim("  estimated")]));
+    lines.push(line([dim(`≈ ${estimate.inputTokens} in / ${estimate.outputTokens} out tok`)]));
+    lines.push(
+      line([
+        spent === undefined
+          ? dim(":cost 0.20/1.00 to price it")
+          : span(`${cost.usd(spent.total)} per call`, { fg: SCORE }),
+      ]),
+    );
   }
 
   lines.push(blankLine());
@@ -302,6 +318,7 @@ function sketchView(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
   if (!ed) return undefined;
   const threshold = app.threshold;
   const defaultModel = app.modelName();
+  const rates = app.rates;
   const parsed = ed.parsed();
 
   buffer.clear(area);
@@ -393,7 +410,7 @@ function sketchView(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
 
   const session = parsed.toSession();
   const model = session.model ?? defaultModel;
-  preview.push(...previewLines(ed.preview, session, model, threshold));
+  preview.push(...previewLines(ed.preview, session, model, threshold, rates));
   buffer.paragraph(previewArea, wrap.wrapAll(preview, previewArea.width));
 
   // ---- the status line: what the cursor is on ----
@@ -423,10 +440,21 @@ function previewLines(
   session: Session,
   model: string,
   threshold: number,
+  rates: cost.Rates | undefined,
 ): Line[] {
   if (preview === "json") return highlight.json(session.requestJson(model));
   if (preview === "ts") {
     return highlight.typescript(codegen.typescript(session, model, threshold));
+  }
+  if (preview === "cost") {
+    if (session.questions.length === 0) {
+      return [line([dim("  add a question below the --- line to see what a call would cost")])];
+    }
+    return costLines(
+      cost.estimate(session, model),
+      rates,
+      ":cost 0.20/1.00 prices it, dollars per million tokens",
+    );
   }
   if (session.questions.length === 0) {
     return [line([dim("  add a question below the --- line to see the shape of its answer")])];

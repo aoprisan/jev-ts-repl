@@ -13,10 +13,12 @@ import {
   Client,
   codegen,
   compact,
+  cost,
   DEFAULT_BASE_URL,
   DEFAULT_MODEL,
   format,
   LESSONS,
+  linesText,
   mock,
   noul,
   PRESETS,
@@ -39,13 +41,15 @@ import {
 } from "./store.js";
 
 type Tab = "page" | "build" | "learn" | "preview";
-type PreviewKind = "json" | "answers" | "ts" | "rust";
+type PreviewKind = "json" | "answers" | "ts" | "rust" | "cost";
 
 interface Ask {
   readonly model: string;
   readonly answers: ReadonlyArray<[string, Answer | undefined]>;
   readonly raw: Json;
   readonly live: boolean;
+  /** What the API said it spent, when it said anything. */
+  readonly usage?: { inputTokens?: number; outputTokens?: number };
 }
 
 interface State {
@@ -112,6 +116,12 @@ const modelName = (session?: SessionType): string =>
   session?.model ?? (state.settings.model === "" ? DEFAULT_MODEL : state.settings.model);
 
 const isLive = (): boolean => state.key !== undefined && state.key !== "";
+
+/** Where the rates come from on this host, for the line the table shows without them. */
+const HOW_TO_PRICE = "Key → price sets dollars per million tokens, input then output";
+
+/** Rates for the cost preview: whatever the settings hold, if it parses. */
+const rates = (): cost.Rates | undefined => cost.ratesFromEnv(state.settings.price);
 
 function setPage(next: string): void {
   state.page = next;
@@ -456,6 +466,25 @@ function drawPreview(): void {
     preview.append(h("pre", {}, [codegen.rust(session, model, state.settings.threshold)]));
     return;
   }
+  if (state.preview === "cost") {
+    if (session.questions.length === 0) {
+      preview.append(
+        h("p", { class: "empty" }, ["Add a question below the --- line to see what a call costs."]),
+      );
+      return;
+    }
+    preview.append(
+      h("div", { class: "answer" }, [
+        styledLines(format.costLines(cost.estimate(session, model), rates(), HOW_TO_PRICE)),
+      ]),
+    );
+    preview.append(
+      h("p", { class: "note" }, [
+        "Tokens are estimated from the body, not counted by the API's tokenizer — a live answer reports what it actually spent. Rates live in the key dialog.",
+      ]),
+    );
+    return;
+  }
 
   const last = state.last;
   if (!last) {
@@ -475,6 +504,8 @@ function drawPreview(): void {
         : `simulated locally as ${last.model} — plausible shapes, no reasoning`,
     ]),
   );
+  const spentNote = spent(last, session);
+  if (spentNote !== undefined) preview.append(h("p", { class: "note" }, [spentNote]));
   for (const [name, answer] of last.answers) {
     if (!answer) {
       preview.append(h("p", { class: "empty" }, [`${name}: no answer`]));
@@ -494,6 +525,27 @@ function drawPreview(): void {
   );
 }
 
+/**
+ * What the last ask cost: counted from the `usage` a live answer reports, estimated from the page
+ * when nothing was sent. Without rates it is tokens only.
+ */
+function spent(last: Ask, session: SessionType): string | undefined {
+  const priced = rates();
+  if (last.live) {
+    const usage = last.usage ?? {};
+    if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
+    const money =
+      priced === undefined
+        ? ""
+        : ` · ${cost.usd(cost.price(usage.inputTokens, usage.outputTokens, priced).total)}`;
+    return `${usage.inputTokens} in / ${usage.outputTokens} out tokens${money}`;
+  }
+  const estimate = cost.estimate(session, last.model);
+  const money =
+    priced === undefined ? "" : ` · ${cost.usd(cost.priceEstimate(estimate, priced).total)}`;
+  return `≈ ${estimate.inputTokens} in / ${estimate.outputTokens} out tokens${money} — estimated, since nothing was sent`;
+}
+
 function previewText(): string {
   const page = parsed();
   if (!page.ok()) return "";
@@ -506,6 +558,8 @@ function previewText(): string {
       return codegen.typescript(session, model, state.settings.threshold);
     case "rust":
       return codegen.rust(session, model, state.settings.threshold);
+    case "cost":
+      return linesText(format.costLines(cost.estimate(session, model), rates(), HOW_TO_PRICE));
     case "answers":
       return state.last ? JSON.stringify(state.last.raw, null, 2) : "";
   }
@@ -561,6 +615,7 @@ async function ask(): Promise<void> {
       ),
       raw: response.raw,
       live: true,
+      usage: response.usage,
     };
     say(`answered by ${response.model}`);
   } catch (error) {
@@ -577,6 +632,14 @@ async function ask(): Promise<void> {
 }
 
 // ---------------------------------------------------------------- the learn tab
+
+/** Lesson commands the terminal answers by printing something this page shows as a tab. */
+const PREVIEW_COMMANDS: Readonly<Record<string, PreviewKind>> = {
+  ":json": "json",
+  ":ts": "ts",
+  ":rust": "rust",
+  ":cost": "cost",
+};
 
 function drawLesson(): void {
   const lesson = LESSONS[state.lesson];
@@ -596,6 +659,19 @@ function drawLesson(): void {
             const page = parsed();
             if (!page.ok()) {
               say("fix the page's problems first");
+              return;
+            }
+            // A lesson that says `:ask` means the button this page already has.
+            if (lesson.tryThis === ":ask") {
+              void ask();
+              return;
+            }
+            // A lesson that points at something the terminal prints is a tab over here.
+            const tab = PREVIEW_COMMANDS[lesson.tryThis];
+            if (tab !== undefined) {
+              state.preview = tab;
+              show("preview");
+              draw();
               return;
             }
             const session = page.toSession();
@@ -677,6 +753,7 @@ function openSettings(): void {
   el<HTMLInputElement>("base-input").value = state.settings.baseUrl;
   el<HTMLInputElement>("model-input").value = state.settings.model;
   el<HTMLInputElement>("threshold-input").value = String(state.settings.threshold);
+  el<HTMLInputElement>("price-input").value = state.settings.price;
   settingsDialog.showModal();
 }
 
@@ -684,6 +761,7 @@ function saveSettingsDialog(): void {
   const key = el<HTMLInputElement>("key-input").value.trim();
   const remember = el<HTMLInputElement>("remember-input").checked;
   const threshold = Number(el<HTMLInputElement>("threshold-input").value);
+  const price = el<HTMLInputElement>("price-input").value.trim();
   state.key = key === "" ? undefined : key;
   state.settings = {
     ...state.settings,
@@ -691,6 +769,8 @@ function saveSettingsDialog(): void {
     baseUrl: el<HTMLInputElement>("base-input").value.trim(),
     model: el<HTMLInputElement>("model-input").value.trim(),
     threshold: Number.isFinite(threshold) ? Math.min(1, Math.max(0, threshold)) : 0.5,
+    // Rates that do not parse are dropped rather than kept as a price nobody can read.
+    price: price === "" || cost.ratesFromEnv(price) !== undefined ? price : "",
   };
   if (remember && key !== "") rememberKey(key);
   else forgetKey();

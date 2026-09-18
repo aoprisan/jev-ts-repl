@@ -33,6 +33,8 @@ export type { Msg } from "./repl/app.js";
 export { Builder } from "./repl/builder.js";
 export type { Field, Kind, Outcome as BuilderOutcome } from "./repl/builder.js";
 export * as codegen from "./repl/codegen.js";
+export * as cost from "./repl/cost.js";
+export type { Cost, Estimate, QuestionEstimate, Rates } from "./repl/cost.js";
 export { Editor, PREVIEWS } from "./repl/editor.js";
 export type { Outcome as EditorOutcome, Preview } from "./repl/editor.js";
 export * as format from "./repl/format.js";

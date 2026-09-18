@@ -14,12 +14,14 @@ import type { Line } from "../tui/style.js";
 import { blankLine, line, span } from "../tui/style.js";
 import { Builder } from "./builder.js";
 import * as codegen from "./codegen.js";
+import * as cost from "./cost.js";
 import { Editor } from "./editor.js";
 import {
   ACCENT,
   answerLines,
   BAD,
   bold,
+  costLines,
   dim,
   errorLines,
   plain,
@@ -64,6 +66,7 @@ export const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   [":ask", "send it (or press Enter on an empty line)"],
   [":json", "the exact request body this session POSTs"],
   [":last", "the last raw response body"],
+  [":cost", "what a call costs — :cost <in>/<out> sets dollars per million tokens"],
   [":ts", "this session as a TypeScript program"],
   [":rust", "this session as a Rust program against typesafe-ai-sdk"],
   [":threshold", ":threshold <0-1> — what counts as a yes for a noul"],
@@ -125,6 +128,8 @@ export class App {
   suggested: string | undefined;
   threshold = 0.5;
   timeoutMs: number | undefined;
+  /** Dollars per million tokens, from `JEV_PRICE` or `:cost`; `undefined` shows tokens only. */
+  rates: cost.Rates | undefined;
   lastRaw: string | undefined;
   /** Set while builder mode is open. */
   builder: Builder | undefined;
@@ -138,6 +143,7 @@ export class App {
 
   constructor(send: (msg: Msg) => void = () => {}) {
     this.#send = send;
+    this.rates = cost.ratesFromEnv(process.env[cost.PRICE_ENV]);
     try {
       this.client = Client.fromEnv();
     } catch {
@@ -526,6 +532,10 @@ export class App {
       case ":last":
         this.#showLast();
         break;
+      case ":cost":
+      case ":price":
+        this.#costCmd(args);
+        break;
       case ":ts":
       case ":typescript":
       case ":code":
@@ -828,6 +838,49 @@ export class App {
     this.#extend(highlight.json(this.lastRaw));
   }
 
+  /** `:cost` estimates the next call; `:cost <in>/<out>` puts a price on it, `:cost off` drops it. */
+  #costCmd(args: string): void {
+    if (args === "off" || args === "clear" || args === "none") {
+      this.rates = undefined;
+      this.#note("rates cleared — :cost now counts tokens only.");
+      return;
+    }
+    if (args !== "") {
+      const parsed = cost.parseRates(args);
+      if (!parsed.ok) {
+        this.#bad(parsed.error);
+        return;
+      }
+      this.rates = parsed.value;
+      this.#note(`rates ← ${cost.formatRates(parsed.value)}`);
+    }
+    if (this.session.questions.length === 0) {
+      this.#warn(
+        "nothing to price yet — :noul, :choice or :score first (`:preset triage` loads a set).",
+      );
+      return;
+    }
+    this.#heading(`cost estimate  ·  ${this.modelName()}`);
+    this.#extend(
+      costLines(
+        cost.estimate(this.session, this.modelName()),
+        this.rates,
+        ":cost 0.20/1.00 prices it: dollars per million tokens, input then output",
+      ),
+    );
+    this.#note(
+      "Tokens are estimated from the body, not counted by the API's tokenizer; `usage` on a live answer is the real thing.",
+    );
+    this.#note(
+      "Answer sizes come from the shapes you asked for: a score echoes its legend, a choice one probability per label.",
+    );
+    if (this.rates !== undefined) {
+      this.#note(
+        `${cost.PRICE_ENV}=${cost.ratesValue(this.rates)} sets the same rates at startup.`,
+      );
+    }
+  }
+
   #showTypescript(): void {
     const code = codegen.typescript(this.session, this.modelName(), this.threshold);
     this.#heading("this session, as TypeScript");
@@ -1058,6 +1111,11 @@ export class App {
       else this.#warn(`${name}: mock mode cannot simulate this question shape.`);
     }
     this.lastRaw = pretty(mock.mockBody(answers, this.modelName()));
+    const estimated = cost.estimate(this.session, this.modelName());
+    const spent = this.rates === undefined ? undefined : cost.priceEstimate(estimated, this.rates);
+    this.#note(
+      `≈ ${estimated.inputTokens} in / ${estimated.outputTokens} out tokens${spent === undefined ? "" : ` · ${cost.usd(spent.total)}`} — estimated, since nothing was sent (:cost breaks it down).`,
+    );
     this.#note(
       "Mock numbers are deterministic noise, not judgement. :key <api-key> for real answers.",
     );
@@ -1069,10 +1127,14 @@ export class App {
       res.usage.inputTokens !== undefined && res.usage.outputTokens !== undefined
         ? ` · ${res.usage.inputTokens} in / ${res.usage.outputTokens} out tokens`
         : "";
+    const spent = this.rates === undefined ? undefined : cost.priceUsage(res.usage, this.rates);
+    const money = spent === undefined ? "" : ` · ${cost.usd(spent.total)}`;
     this.#push(
       line([
         span("  answers  ", { fg: ACCENT, bold: true }),
-        dim(`${res.model} · ${elapsedMs.toFixed(0)} ms · ${res.meta.attempts} attempt(s)${tokens}`),
+        dim(
+          `${res.model} · ${elapsedMs.toFixed(0)} ms · ${res.meta.attempts} attempt(s)${tokens}${money}`,
+        ),
       ]),
     );
     for (const [name, answer] of res.answers) {

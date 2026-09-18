@@ -14,6 +14,8 @@ export interface Settings {
   model: string;
   baseUrl: string;
   threshold: number;
+  /** `<input>/<output>` dollars per million tokens, or "" for tokens without a price. */
+  price: string;
   remember: boolean;
 }
 
@@ -22,6 +24,7 @@ export const DEFAULTS: Settings = {
   model: "",
   baseUrl: "",
   threshold: 0.5,
+  price: "",
   remember: false,
 };
 
@@ -59,6 +62,7 @@ export function loadSettings(): Settings {
       model: typeof parsed.model === "string" ? parsed.model : DEFAULTS.model,
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : DEFAULTS.baseUrl,
       threshold: typeof parsed.threshold === "number" ? parsed.threshold : DEFAULTS.threshold,
+      price: typeof parsed.price === "string" ? parsed.price : DEFAULTS.price,
       remember: parsed.remember === true,
     };
   } catch {

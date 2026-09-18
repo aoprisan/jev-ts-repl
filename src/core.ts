@@ -39,6 +39,8 @@ export * as sketch from "./repl/sketch.js";
 
 // Offline answers, code generation, the ready-made sessions and the guided track.
 export * as codegen from "./repl/codegen.js";
+export * as cost from "./repl/cost.js";
+export type { Cost, Estimate, QuestionEstimate, Rates } from "./repl/cost.js";
 export * as mock from "./repl/mock.js";
 export { find as findPreset, PRESETS } from "./repl/presets.js";
 export type { Preset } from "./repl/presets.js";
