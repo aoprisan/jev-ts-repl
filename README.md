@@ -120,8 +120,11 @@ npm install
 npm test          # vitest
 npm run typecheck
 npm run build     # dist/, what npm publishes
-npm start         # run the REPL from source
+npm start         # build, then run the REPL
 ```
+
+`npm start` builds first, because the sources import each other by their emitted `.js` paths (what
+NodeNext ESM requires) and Node's type stripping does not remap those to `.ts`.
 
 ### Releasing
 
