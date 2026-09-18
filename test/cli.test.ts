@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -49,5 +49,17 @@ describe.runIf(built)("the built CLI", () => {
     }
     expect(status).toBe(1);
     expect(stderr).toContain("interactive terminal");
+  });
+});
+
+describe("the manifest", () => {
+  it("keeps the version the client reports in step with package.json", async () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"),
+    ) as { version: string };
+    const { VERSION } = await import("../src/typesafe/constants.js");
+    expect(VERSION, "bump src/typesafe/constants.ts when bumping package.json").toBe(
+      manifest.version,
+    );
   });
 });
