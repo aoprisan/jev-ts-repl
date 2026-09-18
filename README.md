@@ -103,6 +103,46 @@ const client = new Client({
 The REPL's own pieces are exported too (`App`, `Session`, `sketch`, `codegen`, `mock`, the terminal
 buffer), so a session can be driven, rendered or snapshot-tested without a terminal.
 
+`jev-repl/core` is the same thing minus the terminal — no `node:` imports, no `process`, no stdin —
+so it also runs in a browser or a worker:
+
+```ts
+import { codegen, mock, sketch } from "jev-repl/core";
+
+const page = sketch.parse("A payout failed again.\n---\nis_urgent? The message conveys urgency");
+const session = page.toSession();
+session.requestJson("jev-latest"); // the exact body
+codegen.typescript(session, "jev-latest", 0.5); // the same session as code
+mock.answer(session.state, "is_urgent", session.questionsJson()["is_urgent"]); // offline answer
+```
+
+## On the web
+
+The same REPL runs as an installable page, built from that core: `npm run build:web` writes a
+static `site/` with no server behind it.
+
+```sh
+npm run build:web
+npx --yes http-server site -p 8080   # or any static server
+```
+
+- **Offline is the default.** A service worker precaches the shell, so after one load the page
+  works with the network off — the notation, the lesson track, the generated code and the
+  simulated answers need nothing but the device.
+- **The key is optional, and stays yours.** Without one, answers are simulated the way `jev` does
+  in a terminal. With one, requests go straight from the browser to the API; the key lives in
+  memory unless you ask for it to be kept, and `Forget key` removes it. There is no backend to
+  send it to. A browser can only reach an API that allows its origin, so if a live call fails with
+  a network error that is CORS — point the base URL at a proxy you control.
+- **A phone gets a form, a desktop gets the page.** Sketch notation is punctuation-heavy, which a
+  soft keyboard is bad at, so the Build tab edits the same request as fields; both write the same
+  page, because both go through the same parser.
+- **Share is a link.** `Share` puts the page in the URL fragment — the notation travels, the key
+  never does.
+
+`web/` holds the sources, `site/` is the build output, and the PWA is deployed to GitHub Pages by
+`.github/workflows/pages.yml` on every push to `main`.
+
 ## Requirements
 
 Node 18.17 or newer (it uses the built-in `fetch`), and a terminal for the REPL itself.
@@ -120,6 +160,8 @@ npm install
 npm test          # vitest
 npm run typecheck
 npm run build     # dist/, what npm publishes
+npm run build:web # site/, the installable web REPL
+npm run icons     # regenerate the app icons
 npm start         # run the REPL from source
 ```
 
