@@ -1,0 +1,62 @@
+{
+  "name": "jev-repl",
+  "version": "0.1.0",
+  "description": "Terminal REPL for shaping TypeSafe AI System One requests: noul, choice and score questions, with a live sketch editor",
+  "keywords": [
+    "typesafe",
+    "ai",
+    "repl",
+    "tui",
+    "cli",
+    "classification"
+  ],
+  "license": "MIT",
+  "author": "Andrei Oprisan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aoprisan/jev-ts-repl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aoprisan/jev-ts-repl/issues"
+  },
+  "homepage": "https://github.com/aoprisan/jev-ts-repl#readme",
+  "type": "module",
+  "bin": {
+    "jev": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && vitest run",
+    "test:watch": "vitest",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "prepack": "npm run clean && npm run build",
+    "start": "node --experimental-strip-types src/cli.ts",
+    "test:unit": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.1"
+  }
+}
