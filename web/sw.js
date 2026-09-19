@@ -11,10 +11,13 @@ const CACHE = `jev-${VERSION}`;
 const ASSETS = __PRECACHE__;
 
 self.addEventListener("install", (event) => {
+  // Straight from the network: the host may still be handing out the last deploy's copies for a
+  // few more minutes, and a precache is only worth having if it holds what was just published.
+  const fresh = ASSETS.map((url) => new Request(url, { cache: "reload" }));
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(ASSETS))
+      .then((cache) => cache.addAll(fresh))
       .then(() => self.skipWaiting()),
   );
 });
