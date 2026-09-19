@@ -38,6 +38,8 @@ export type { Cost, Estimate, QuestionEstimate, Rates } from "./repl/cost.js";
 export { Editor, PREVIEWS } from "./repl/editor.js";
 export type { Outcome as EditorOutcome, Preview } from "./repl/editor.js";
 export * as format from "./repl/format.js";
+export * as headless from "./repl/headless.js";
+export type { Answered, Command as HeadlessCommand } from "./repl/headless.js";
 export * as highlight from "./repl/highlight.js";
 export { LESSONS } from "./repl/lessons.js";
 export type { Lesson } from "./repl/lessons.js";

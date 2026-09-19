@@ -140,7 +140,7 @@ function round(x: number): number {
 
 /** The body the mock answers would have arrived in — so `:last` teaches the same shape offline. */
 export function mockBody(
-  answers: ReadonlyArray<[string, Answer | undefined]>,
+  answers: ReadonlyArray<readonly [string, Answer | undefined]>,
   model: string,
 ): Json {
   const map: Record<string, Json> = {};

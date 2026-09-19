@@ -121,6 +121,22 @@ describe("commands", () => {
     const question = { type: "noul", instructions: "urgent?" };
     expect(mock.answer(state, "urgent", question)).toEqual(mock.answer(state, "urgent", question));
     expect(mock.answer(state, "x", { type: "mystery" })).toBeUndefined();
+
+    // Pinned, because the Rust port simulates from the same FNV-1a seed and the two are meant to
+    // answer a page identically. The same vectors are asserted there.
+    expect(mock.answer(state, "urgent", question)).toEqual({ type: "noul", noul: 0.742 });
+    expect(
+      mock.answer(state, "team", {
+        type: "choice",
+        instructions: "which team",
+        criteria: { billing: "money", technical: "bugs" },
+      }),
+    ).toEqual({
+      type: "choice",
+      choice: "billing",
+      probabilities: { billing: 0.599, technical: 0.401 },
+      confidence: 0.198,
+    });
   });
 
   it("refuses to send a session with no questions", () => {
