@@ -141,10 +141,51 @@ function say(message: string): void {
 
 // ---------------------------------------------------------------- the page tab
 
+/**
+ * The width the stylesheet stops scrolling the page sideways at and starts wrapping it. Whether a
+ * line wrapped is read off the textarea itself; this is only here to ask for a redraw on the way
+ * across, since the gutter's rows are measured and the measurement is now a different one.
+ */
+const WRAPPED = window.matchMedia("(max-width: 700px)");
+
+/** A copy of the page, laid out at the textarea's width, only ever asked how tall its lines are. */
+const mirror = h("div", { class: "mirror", "aria-hidden": "true" });
+
+/**
+ * How tall each line of the page is once it has wrapped, or nothing when it does not wrap — the
+ * gutter's own row height is right in that case, and on a screen wide enough to scroll sideways
+ * every line is one row.
+ *
+ * The measurement is a copy rather than a guess: the same text, the same font, the same width as
+ * the textarea's content box, so the browser breaks it in the same places.
+ */
+function lineHeights(rows: readonly string[]): number[] | undefined {
+  const style = window.getComputedStyle(pageInput);
+  // The page is scrolling sideways instead of wrapping, so every line is one row, as drawn.
+  if (style.whiteSpace !== "pre-wrap") return undefined;
+  const width =
+    pageInput.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  // The panel is hidden, so there is nothing to measure against; the resize observer comes back.
+  if (!(width > 0)) return undefined;
+  mirror.style.width = `${width}px`;
+  mirror.style.fontFamily = style.fontFamily;
+  mirror.style.fontSize = style.fontSize;
+  mirror.style.fontStyle = style.fontStyle;
+  mirror.style.fontWeight = style.fontWeight;
+  mirror.style.lineHeight = style.lineHeight;
+  mirror.style.letterSpacing = style.letterSpacing;
+  mirror.style.tabSize = style.tabSize;
+  clear(mirror);
+  // An empty line still takes a row, and an empty box does not.
+  for (const row of rows) mirror.append(h("div", {}, [row === "" ? "\u00a0" : row]));
+  return [...mirror.children].map((row) => row.getBoundingClientRect().height);
+}
+
 function drawGutter(): void {
   const page = parsed();
   clear(gutter);
   const rows = state.page.split("\n");
+  const heights = lineHeights(rows);
   for (let i = 0; i < rows.length; i += 1) {
     const tag = page.tags[i] ?? "blank";
     const problem = page.problemAt(i);
@@ -152,6 +193,8 @@ function drawGutter(): void {
       h("span", { class: sketch.isHead(tag) ? "bold" : "" }, [sketch.tagLabel(tag)]),
       h("span", { class: "flag c-red bold" }, [problem ? "!" : ""]),
     ]);
+    const height = heights?.[i];
+    if (height !== undefined) row.style.height = `${height}px`;
     gutter.append(row);
   }
   gutter.scrollTop = pageInput.scrollTop;
@@ -727,7 +770,10 @@ function paint(): void {
   drawProblems();
   drawCards();
   drawPreview();
-  modePill.textContent = isLive() ? "live" : "offline · simulated";
+  clear(modePill);
+  modePill.append(isLive() ? "live" : "offline");
+  // A narrow header has no room for the note; the footer says where the answers come from in full.
+  if (!isLive()) modePill.append(h("span", { class: "pill-note" }, [" · simulated"]));
   modePill.className = isLive() ? "pill live" : "pill";
 }
 
@@ -781,6 +827,12 @@ function saveSettingsDialog(): void {
 }
 
 function wire(): void {
+  pageInput.parentElement?.append(mirror);
+  // Turning the phone, opening the keyboard, crossing the wrapping width: each changes where the
+  // lines break, and the gutter's rows are only right for the width they were measured at.
+  new ResizeObserver(() => drawGutter()).observe(pageInput);
+  WRAPPED.addEventListener("change", () => drawGutter());
+
   pageInput.addEventListener("input", () => {
     state.page = pageInput.value;
     persist();
