@@ -27,10 +27,10 @@ shapes can be learned offline.
 <Enter>                                          # send; answers come back with their distributions
 ```
 
-- `:lesson` walks a ten-step track from "what is a noul" to confidence gating.
+- `:lesson` walks an eleven-step track from "what is a noul" to what a call costs.
 - `:sketch` (Ctrl-K) opens the whole request as one page of text, with the question types read
   off the punctuation, a gutter that says what each line became, and a live preview of the JSON,
-  simulated answers, or the same request as TypeScript:
+  simulated answers, the same request as TypeScript, or what a call would cost:
 
   ```text
   The payout failed again, third time this month.
@@ -73,6 +73,35 @@ shapes can be learned offline.
 
 Without `TYPESAFE_API_KEY` it starts in mock mode: answers are simulated locally (deterministic,
 not predictive). `:key <api-key>` switches to live calls.
+
+## Outside
+
+A session shaped in the REPL and saved with `:save` is something a script can run. With a
+subcommand `jev` never opens a terminal: it reads a page (or stdin), prints one thing, and says
+with its exit status whether it worked — 0 when it did, 1 when the call or the file did not, 2 when
+the command line did not parse.
+
+```sh
+jev run triage.jev                       # send it; the answers, with their distributions
+jev run triage.jev --json | jq .answers  # the raw response body instead
+jev json triage.jev                      # the exact request body it would POST
+jev cost triage.jev --price 0.20/1.00    # the token table, priced
+jev ts triage.jev                        # the session as a program; `jev rust` for the other one
+jev check triage.jev                     # parse only: every problem, with line numbers
+```
+
+The file is a `.jev` page or a request body, and which one it is comes from the text rather than
+the name, so a body piped back in works the same: `jev json page.jev | jev cost`. `-`, or no file
+at all, reads stdin.
+
+```sh
+jev run triage.jev --state "$(cat ticket.txt)" --json | jq '.answers.is_urgent.noul'
+```
+
+`--state <text>` sets or replaces the state, `--model <name>` picks the model, `--threshold <0-1>`
+says what counts as a yes for a noul, `--price <in>/<out>` prices the table, `--timeout <seconds>`
+bounds a live attempt, and `--mock` stays offline even with a key set. Without a key `jev run`
+simulates the answers and says so on stderr, so the stdout of a mock run is still the answer page.
 
 ## As a library
 
@@ -128,7 +157,7 @@ buffer), so a session can be driven, rendered or snapshot-tested without a termi
 so it also runs in a browser or a worker:
 
 ```ts
-import { codegen, cost, mock, sketch } from "jev-repl/core";
+import { codegen, cost, headless, mock, sketch } from "jev-repl/core";
 
 const page = sketch.parse("A payout failed again.\n---\nis_urgent? The message conveys urgency");
 const session = page.toSession();
@@ -137,6 +166,7 @@ codegen.typescript(session, "jev-latest", 0.5); // the same session as code
 mock.answer(session.state, "is_urgent", session.questionsJson()["is_urgent"]); // offline answer
 cost.estimate(session, "jev-latest"); // tokens in, tokens out, per question
 cost.price(228, 186, { input: 0.2, output: 1 }).total; // dollars, at rates you supply
+headless.answersText(headless.mockAnswers(session), 0.5); // what `jev run` prints
 ```
 
 ## On the web
