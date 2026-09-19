@@ -103,10 +103,22 @@ body {
   height: 100%;
 }
 
+/*
+ * A phone's toolbars slide away and its keyboard slides in; `100%` measures the viewport they are
+ * not in, which puts the footer and the tabs under one of them. `dvh` measures what is on screen.
+ */
+@supports (height: 100dvh) {
+  html,
+  body {
+    height: 100dvh;
+  }
+}
+
 body {
   margin: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr);
   font-family: var(--sans);
   font-size: 15px;
   background: var(--bg);
@@ -149,6 +161,15 @@ footer.chrome {
   background: var(--sunken);
   color: var(--muted);
   cursor: pointer;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The half of the pill a narrow header drops; the footer says the same thing in full. */
+.pill-note {
+  color: inherit;
 }
 
 .pill.live {
@@ -203,7 +224,7 @@ button.drop {
 main {
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .panel {
@@ -256,6 +277,7 @@ body[data-tab="preview"] [data-panel="preview"] {
 .editor {
   flex: 1;
   min-height: 12rem;
+  position: relative;
   display: flex;
   background: var(--surface);
   border: 1px solid var(--edge);
@@ -277,8 +299,25 @@ body[data-tab="preview"] [data-panel="preview"] {
 .gutter-row {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   height: var(--line);
   white-space: nowrap;
+}
+
+/*
+ * The page, laid out again at the textarea's own width, so the gutter can ask how tall each line
+ * became once it wrapped. Never painted, never in the tab order, never read aloud.
+ */
+.mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .flag {
@@ -366,8 +405,14 @@ body[data-tab="preview"] [data-panel="preview"] {
   flex-direction: row;
   align-items: center;
   gap: 0.4rem;
+  min-width: 0;
 }
 
+/*
+ * A select is as wide as its widest option — here, a preset's whole description. The cap is a
+ * length rather than a percentage: a percentage counts as no cap at all while the row is working
+ * out how wide it wants to be, and the hint beside it gets pushed onto a line of its own.
+ */
 .field.inline select {
   width: auto;
   max-width: 20rem;
@@ -452,9 +497,16 @@ body[data-tab="preview"] [data-panel="preview"] {
 
 .segmented {
   display: flex;
+  max-width: 100%;
   border: 1px solid var(--edge);
   border-radius: 8px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.segmented::-webkit-scrollbar {
+  display: none;
 }
 
 .segmented button {
@@ -462,6 +514,8 @@ body[data-tab="preview"] [data-panel="preview"] {
   border-radius: 0;
   font-size: 0.78rem;
   background: transparent;
+  white-space: nowrap;
+  flex: none;
 }
 
 .segmented button.on {
@@ -559,6 +613,9 @@ body[data-tab="preview"] [data-panel="preview"] {
 
 dialog {
   width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100% - 2rem);
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--edge);
   border-radius: 12px;
   background: var(--surface);
@@ -589,6 +646,96 @@ dialog .check {
 
 dialog form {
   display: contents;
+}
+
+/* ---------------------------------------------------------------- phones */
+
+/*
+ * A phone is not a narrow terminal. Nobody reads a rubric by dragging it sideways, so the page
+ * wraps here and the gutter grows with it — `drawGutter` measures each wrapped line. And anything
+ * you can type into is at least 16px, because iOS zooms the whole page in on a smaller one and
+ * never zooms back out.
+ */
+@media (max-width: 700px) {
+  .panel {
+    padding: 0.6rem max(0.6rem, env(safe-area-inset-left)) 0.6rem
+      max(0.6rem, env(safe-area-inset-right));
+  }
+
+  .chrome {
+    padding: 0.4rem max(0.6rem, env(safe-area-inset-left)) 0.4rem
+      max(0.6rem, env(safe-area-inset-right));
+  }
+
+  .chrome button {
+    min-height: 2.25rem;
+  }
+
+  .gutter {
+    width: 4rem;
+    padding: 0.6rem 0.3rem 0.6rem 0.45rem;
+    font-size: 0.68rem;
+  }
+
+  #page {
+    padding: 0.6rem 0.5rem;
+    font-size: 16px;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    overflow-x: hidden;
+  }
+
+  .field input,
+  .field select,
+  .field textarea {
+    font-size: 16px;
+  }
+
+  .field.inline {
+    flex: 1;
+  }
+
+  .field.inline select {
+    flex: 1;
+    max-width: none;
+  }
+
+  /* The spacer that holds the hint to the right has nothing to spare here. */
+  .panel-head .grow {
+    flex: none;
+  }
+
+  .editor {
+    min-height: 9rem;
+  }
+
+  /* `rows` counts lines of text; the border box would then hide the last one under the padding. */
+  #state {
+    min-height: calc(6em + 0.8rem + 2px);
+  }
+
+  dialog {
+    width: min(34rem, calc(100vw - 1rem));
+    max-height: calc(100% - 1rem);
+    padding: 0.85rem;
+  }
+
+  /* Save stays on the screen however long the explanations above it are. */
+  dialog .row {
+    position: sticky;
+    bottom: -0.85rem;
+    margin: 0 -0.85rem -0.85rem;
+    padding: 0.6rem 0.85rem 0.85rem;
+    background: var(--surface);
+    border-top: 1px solid var(--edge);
+  }
+}
+
+/* Under this, the header has room for the mode but not for the note beside it. */
+@media (max-width: 340px) {
+  .pill-note {
+    display: none;
+  }
 }
 
 /* ---------------------------------------------------------------- wide screens */
