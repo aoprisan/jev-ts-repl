@@ -247,11 +247,18 @@ npm login && npm publish
 ```
 
 After that, set the trusted publisher on npmjs.com (the package → Settings → Trusted Publisher →
-repository `aoprisan/jev-ts-repl`, workflow `release.yml`). Every release after that is a tag:
+repository `aoprisan/jev-ts-repl`, workflow `release.yml`). Every release after that is a tag.
+
+A release is prepared on a branch first: bump the version in `package.json`, `package-lock.json`
+and `src/typesafe/constants.ts` — a test fails when those disagree — write what changed in
+`CHANGELOG.md`, and land it on `main`. Then tag the merge commit:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.2.0 && git push origin v0.2.0
 ```
+
+The workflow refuses a tag that does not match the version in the manifest, and lints, typechecks,
+tests and builds before it publishes.
 
 GitHub Actions then authenticates over OIDC — no npm token is stored anywhere — and npm attaches
 provenance automatically.

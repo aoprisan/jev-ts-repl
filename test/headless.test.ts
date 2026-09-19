@@ -174,7 +174,7 @@ describe("answers", () => {
       { inputTokens: 120, outputTokens: 30 },
       new Map([["is_urgent", { type: "noul", noul: 0.9 }]]),
       { answers: {} },
-      { status: 200, headers: new Headers(), attempts: 1 },
+      { status: 200, headers: {}, attempts: 1 },
     );
     const answered = headless.liveAnswers(session(), response);
     expect(answered).toHaveLength(3);
