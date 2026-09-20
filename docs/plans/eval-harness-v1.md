@@ -48,6 +48,14 @@ of guessed.
 - **Commit messages** are one sentence in the imperative, no prefix, like the existing history
   ("Let a session be run without a terminal").
 
+## Nothing existing changes
+
+This is an addition. The REPL, the notation, the presets, the lessons, the six existing one-shot
+commands with their flags, output and exit codes, every export of `jev-repl` and `jev-repl/core`,
+the client, the simulator's pinned numbers and the web REPL all behave exactly as before. Existing
+tests are not edited, only added to; if a step seems to need an existing test changed, the step is
+wrong, not the test. The one new restriction, rejecting `--state`, applies to `eval` only.
+
 ## The contract
 
 ### Command line
@@ -465,9 +473,10 @@ Each step ends with `npm run lint && npm run typecheck && npm test` green and on
      `--concurrency 0` exits 2; `--cases -` with the page on stdin exits 2;
    - `--min-accuracy 1` exits 1 and names a question on stderr. Mock answers are deterministic,
      so build the case's expectation from `mock.answer` first and expect the opposite.
-3. Tests in the `a live call` block, replacing the fixed-body server with one that reads the
-   request body and answers `is_urgent` at `0.9` when the state contains `urgent` and `0.1`
-   otherwise, `usage` `{ input_tokens: 10, output_tokens: 5 }`:
+3. Tests in a new `describe.runIf(built)("a live eval", …)` block with its own server, leaving
+   the existing `a live call` block and its fixed-body server exactly as they are. The new server
+   reads the request body and answers `is_urgent` at `0.9` when the state contains `urgent` and
+   `0.1` otherwise, with `usage` `{ input_tokens: 10, output_tokens: 5 }`:
    - four cases, two of each, all expected correctly: exit 0, `accuracy 1.00`, `40 in / 20 out
 tokens`, one request per case (count them in the server);
    - the same run with `--cache <tmpdir>` twice: the second run makes zero requests and prints
