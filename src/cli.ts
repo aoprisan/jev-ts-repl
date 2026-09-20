@@ -10,21 +10,27 @@
  * saved with `:save` and then run from a script, a Makefile or CI.
  */
 
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { compact, pretty } from "./json.js";
 import { App } from "./repl/app.js";
 import type { Msg } from "./repl/app.js";
 import * as cost from "./repl/cost.js";
+import * as evaluate from "./repl/evaluate.js";
 import type { Command } from "./repl/headless.js";
 import * as headless from "./repl/headless.js";
 import { errorLines } from "./repl/format.js";
+import type { Session } from "./repl/session.js";
 import { render } from "./repl/ui.js";
 import { Terminal } from "./tui/terminal.js";
 import { linesText } from "./tui/style.js";
 import { Client } from "./typesafe/client.js";
 import { API_KEY_ENV, VERSION } from "./typesafe/constants.js";
+import { decodeSystemOne, makeSystemOneResponse } from "./typesafe/responses.js";
 
 const HELP = `jev — a REPL for TypeSafe AI System One questions
 
@@ -50,6 +56,13 @@ Options
   --help, -h             this message
   --version, -v          the version of this package
 
+Options for eval
+  --cases <file>         the JSON Lines file of labelled states to score, or \`-\`
+  --concurrency <n>      how many cases are in the air at once (default 4)
+  --cache <dir>          keep the responses here, so running it again sends nothing
+  --max-cost <dollars>   refuse to send when the estimate is above this
+  --min-accuracy <0-1>   exit 1 when a scored question falls below this
+
 Exit status is 0 when it worked, 1 when the call or the file did not, 2 when the
 command line did not parse.
 `;
@@ -64,12 +77,29 @@ interface Options {
   timeoutMs?: number;
   mock: boolean;
   json: boolean;
+  /** `jev eval`: the file of labelled cases, and what to do with them. */
+  cases?: string;
+  concurrency: number;
+  cache?: string;
+  maxCost?: number;
+  minAccuracy?: number;
 }
 
 /** A usage error: the command line itself did not make sense. */
 class UsageError extends Error {}
 
-const FLAGS_WITH_VALUES = ["--state", "--model", "--threshold", "--price", "--timeout"];
+const FLAGS_WITH_VALUES = [
+  "--state",
+  "--model",
+  "--threshold",
+  "--price",
+  "--timeout",
+  "--cases",
+  "--concurrency",
+  "--cache",
+  "--max-cost",
+  "--min-accuracy",
+];
 
 /**
  * Read the flags after a subcommand. `--flag value` and `--flag=value` both work, and the first
@@ -81,6 +111,7 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
     threshold: 0.5,
     mock: false,
     json: false,
+    concurrency: 4,
     rates: cost.ratesFromEnv(env[cost.PRICE_ENV]),
   };
   let file: string | undefined;
@@ -124,6 +155,36 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
         options.timeoutMs = Math.round(seconds * 1000);
         break;
       }
+      case "--cases":
+        options.cases = valueOf();
+        break;
+      case "--concurrency": {
+        const workers = Number(valueOf());
+        if (!Number.isInteger(workers) || workers < 1) {
+          throw new UsageError("--concurrency takes a whole number of 1 or more.");
+        }
+        options.concurrency = workers;
+        break;
+      }
+      case "--cache":
+        options.cache = valueOf();
+        break;
+      case "--max-cost": {
+        const dollars = Number(valueOf());
+        if (!Number.isFinite(dollars) || dollars <= 0) {
+          throw new UsageError("--max-cost takes a number of dollars greater than 0.");
+        }
+        options.maxCost = dollars;
+        break;
+      }
+      case "--min-accuracy": {
+        const bar = Number(valueOf());
+        if (!Number.isFinite(bar) || bar < 0 || bar > 1) {
+          throw new UsageError("--min-accuracy takes a number from 0 to 1.");
+        }
+        options.minAccuracy = bar;
+        break;
+      }
       case "--mock":
         options.mock = true;
         break;
@@ -146,6 +207,27 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
   return options;
 }
 
+/**
+ * The flags `eval` reads differently from the other commands.
+ *
+ * `--state` is the interesting one: a page's state is what the cases replace, so passing one would
+ * quietly judge the same text forty times.
+ */
+function checkEvalOptions(options: Options): void {
+  if (options.state !== undefined) {
+    throw new UsageError("--state does not apply to eval: the cases carry the states.");
+  }
+  if (options.cases === undefined) {
+    throw new UsageError("--cases <file> is required: jev eval page.jev --cases cases.jsonl");
+  }
+  if (options.cases === "-" && options.file === "-") {
+    throw new UsageError("the page and the cases cannot both come from stdin.");
+  }
+  if (options.maxCost !== undefined && options.rates === undefined) {
+    throw new UsageError("--max-cost needs rates: pass --price <in>/<out> or set JEV_PRICE.");
+  }
+}
+
 /** The page: a file, or everything on stdin when the path is `-`. */
 function readInput(path: string): string {
   try {
@@ -156,6 +238,152 @@ function readInput(path: string): string {
       path === "-" ? `could not read stdin: ${reason}` : `could not read ${path}: ${reason}`,
     );
   }
+}
+
+/** Simulated answers for a case, the same deterministic ones `jev run --mock` prints. */
+function mockAsk(session: Session): Promise<evaluate.Outcome> {
+  return Promise.resolve({ ok: true, answers: headless.mockAnswers(session) });
+}
+
+/** The cache key: the request body this case would POST, hashed. */
+function cacheKey(session: Session, model: string): string {
+  const body = compact({ state: session.state, model, questions: session.questionsJson() });
+  return createHash("sha256").update(body).digest("hex");
+}
+
+/** A cached response, or `undefined` when there is none this run can use. */
+function cached(file: string, session: Session): evaluate.Outcome | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const decoded = decodeSystemOne(text);
+    const response = makeSystemOneResponse(
+      decoded.model,
+      decoded.usage,
+      decoded.answers,
+      decoded.raw,
+      {
+        status: 200,
+        headers: {},
+        attempts: 0,
+      },
+    );
+    return { ok: true, answers: headless.liveAnswers(session, response), usage: response.usage };
+  } catch {
+    // A file this version cannot read is not worth failing a case over; send the request instead.
+    return undefined;
+  }
+}
+
+/** One live call per case, through the cache when there is one. */
+function liveAsk(
+  client: Client,
+  model: string,
+  options: Options,
+): (session: Session) => Promise<evaluate.Outcome> {
+  const call =
+    options.timeoutMs === undefined ? { model } : { model, timeoutMs: options.timeoutMs };
+  const dir = options.cache;
+  return async (session) => {
+    const file = dir === undefined ? undefined : join(dir, `${cacheKey(session, model)}.json`);
+    if (file !== undefined) {
+      const hit = cached(file, session);
+      if (hit !== undefined) return hit;
+    }
+    try {
+      const response = await client.systemOne(session.state, session.questions, call);
+      if (file !== undefined) writeFileSync(file, `${pretty(response.raw)}\n`);
+      return { ok: true, answers: headless.liveAnswers(session, response), usage: response.usage };
+    } catch (e) {
+      return { ok: false, error: linesText(errorLines(e)).trim() };
+    }
+  };
+}
+
+/**
+ * `jev eval`: the page over a file of labelled states, scored.
+ *
+ * The order matters. Nothing is sent until the cases have parsed and the estimate has been shown,
+ * because a cases file is the one input that turns a typo into a bill.
+ */
+async function runEval(
+  session: Session,
+  options: Options,
+  model: string,
+  client: Client | undefined,
+  out: (text: string) => void,
+  err: (text: string) => void,
+): Promise<number> {
+  let text: string;
+  try {
+    text = readInput(options.cases as string);
+  } catch (e) {
+    err(`jev eval: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 1;
+  }
+  const parsed = evaluate.parseCases(text, session);
+  if (!parsed.ok) {
+    err(`jev eval: ${parsed.error}\n`);
+    return 1;
+  }
+  const cases = parsed.value;
+
+  if (client !== undefined) {
+    const estimate = evaluate.preflight(session, cases, model, options.rates);
+    const rates = options.rates;
+    const money =
+      estimate.cost === undefined || rates === undefined
+        ? ""
+        : `, ≈ ${cost.usd(estimate.cost.total)} at ${cost.formatRates(rates)}`;
+    err(
+      `jev eval: ${estimate.cases} case${estimate.cases === 1 ? "" : "s"}, ≈ ${estimate.inputTokens} in / ${estimate.outputTokens} out tokens${money}\n`,
+    );
+    if (options.maxCost !== undefined && estimate.cost !== undefined) {
+      if (estimate.cost.total > options.maxCost) {
+        err(
+          `jev eval: refusing to send: ≈ ${cost.usd(estimate.cost.total)} is above --max-cost ${cost.usd(options.maxCost)}.\n`,
+        );
+        return 1;
+      }
+    }
+    if (options.cache !== undefined) {
+      try {
+        mkdirSync(options.cache, { recursive: true });
+      } catch (e) {
+        err(`jev eval: could not use ${options.cache}: ${e instanceof Error ? e.message : e}\n`);
+        return 1;
+      }
+    }
+  }
+
+  const ask = client === undefined ? mockAsk : liveAsk(client, model, options);
+  const outcomes = await evaluate.run(session, cases, ask, options.concurrency);
+  const report = evaluate.report(session, cases, outcomes, {
+    model,
+    threshold: options.threshold,
+    rates: options.rates,
+  });
+  if (options.json) out(`${pretty(evaluate.reportJson(report))}\n`);
+  else out(`${linesText(evaluate.reportLines(report))}\n`);
+  if (client === undefined) {
+    err(
+      "Simulated answers: deterministic noise, not judgement. Set TYPESAFE_API_KEY for real ones.\n",
+    );
+  }
+
+  let code = report.errors.length > 0 ? 1 : 0;
+  const bar = options.minAccuracy;
+  if (bar !== undefined) {
+    for (const [name, accuracy] of evaluate.belowBar(report, bar)) {
+      err(`jev eval: ${name} accuracy ${accuracy.toFixed(2)} is below ${bar.toFixed(2)}.\n`);
+      code = 1;
+    }
+  }
+  return code;
 }
 
 /** One shot: read a page, print one thing, say whether it worked. */
@@ -169,6 +397,7 @@ async function runCommand(
   let options: Options;
   try {
     options = parseOptions(argv, env);
+    if (command === "eval") checkEvalOptions(options);
   } catch (e) {
     err(`jev ${command}: ${e instanceof Error ? e.message : String(e)}\n`);
     return 2;
@@ -214,6 +443,8 @@ async function runCommand(
     }
   }
   const model = session.model ?? client?.defaultModel ?? "jev-latest";
+
+  if (command === "eval") return runEval(session, options, model, client, out, err);
 
   switch (command) {
     case "json":

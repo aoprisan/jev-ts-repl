@@ -13,6 +13,9 @@ import type { AddressInfo } from "node:net";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import * as mock from "../src/repl/mock.js";
+import { isYes } from "../src/typesafe/responses.js";
+
 const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 const built = existsSync(CLI);
 
@@ -288,5 +291,221 @@ describe.runIf(built)("a live call", () => {
     const { status: code, stderr } = await live(["run", "--mock"]);
     expect(code).toBe(0);
     expect(stderr).toContain("Simulated answers");
+  });
+});
+
+const EVAL_PAGE = `placeholder
+---
+is_urgent? The message conveys urgency
+department: Which team should handle this
+  billing = Payment or subscription issues
+  technical = Bugs or integration problems
+  sales = Pricing and plans
+frustration: How frustrated the customer appears
+  Calm < Frustrated but civil < Very angry
+`;
+
+const EVAL_CASES = [
+  '{"id": "t-001", "state": "Stripe has been failing for 3 days", "expect": {"is_urgent": true, "department": "technical", "frustration": 2}}',
+  '{"state": "Can I get a copy of last month\'s invoice?", "expect": {"department": "billing", "is_urgent": false}}',
+  '{"state": "What does the enterprise plan include?", "expect": {"department": "sales", "frustration": 0}}',
+].join("\n");
+
+/** A directory with a page and a cases file in it, for the duration of one test. */
+function withFiles(cases: string, run: (page: string, casesPath: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "jev-eval-"));
+  try {
+    const page = join(dir, "triage.jev");
+    const casesPath = join(dir, "cases.jsonl");
+    writeFileSync(page, EVAL_PAGE);
+    writeFileSync(casesPath, cases);
+    run(page, casesPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe.runIf(built)("scoring a rubric offline", () => {
+  it("reports every question it was given labels for", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      const { status, stdout, stderr } = jev(["eval", page, "--cases", cases, "--mock"]);
+      expect(status).toBe(0);
+      expect(stdout).toMatch(/is_urgent\s+noul/);
+      expect(stdout).toMatch(/department\s+choice/);
+      expect(stdout).toMatch(/frustration\s+score/);
+      expect(stdout).toContain("best f1 at");
+      expect(stdout).toContain("3 cases · 3 answered · 0 errors");
+      expect(stderr).toContain("Simulated answers");
+    });
+  });
+
+  it("prints the whole report as JSON for a script to read", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      const { status, stdout } = jev(["eval", page, "--cases", cases, "--mock", "--json"]);
+      expect(status).toBe(0);
+      const report = JSON.parse(stdout) as { cases: number; questions: Record<string, unknown> };
+      expect(report.cases).toBe(3);
+      expect(Object.keys(report.questions)).toEqual(["is_urgent", "department", "frustration"]);
+    });
+  });
+
+  it("refuses a cases file with a bad line, and says which line", () => {
+    withFiles(`${EVAL_CASES}\n{"state": "no expectations"}`, (page, cases) => {
+      const { status, stderr } = jev(["eval", page, "--cases", cases, "--mock"]);
+      expect(status).toBe(1);
+      expect(stderr).toContain("cases line 4:");
+    });
+  });
+
+  it("exits 2 on a command line eval cannot use", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      const state = jev(["eval", page, "--cases", cases, "--mock", "--state", "hello"]);
+      expect(state.status).toBe(2);
+      expect(state.stderr).toContain("--state does not apply to eval: the cases carry the states.");
+
+      const rateless = jev(["eval", page, "--cases", cases, "--mock", "--max-cost", "1"]);
+      expect(rateless.status).toBe(2);
+      expect(rateless.stderr).toContain(
+        "--max-cost needs rates: pass --price <in>/<out> or set JEV_PRICE.",
+      );
+
+      expect(jev(["eval", page, "--cases", cases, "--concurrency", "0"]).status).toBe(2);
+      expect(jev(["eval", "--cases", "-", "--mock"], { input: EVAL_PAGE }).stderr).toContain(
+        "the page and the cases cannot both come from stdin.",
+      );
+      expect(jev(["eval", page, "--mock"]).status).toBe(2);
+    });
+  });
+
+  it("exits 1 and names the question when a bar is not met", () => {
+    // The simulator is deterministic, so a case can be labelled with what it is bound to get wrong.
+    const state = "A payout failed again.";
+    const answer = mock.answer(state, "is_urgent", {
+      type: "noul",
+      instructions: "The message conveys urgency",
+    });
+    const yes = answer?.type === "noul" && isYes(answer, 0.5);
+    const cases = `{"state": ${JSON.stringify(state)}, "expect": {"is_urgent": ${!yes}}}`;
+    withFiles(cases, (page, casesPath) => {
+      const { status, stderr } = jev([
+        "eval",
+        page,
+        "--cases",
+        casesPath,
+        "--mock",
+        "--min-accuracy",
+        "1",
+      ]);
+      expect(status).toBe(1);
+      expect(stderr).toContain("jev eval: is_urgent accuracy 0.00 is below 1.00.");
+    });
+  });
+
+  it("lists eval and its flags in --help", () => {
+    const help = jev(["--help"]).stdout;
+    expect(help).toContain("eval");
+    for (const flag of ["--cases", "--concurrency", "--cache", "--max-cost", "--min-accuracy"]) {
+      expect(help).toContain(flag);
+    }
+  });
+});
+
+describe.runIf(built)("a live eval", () => {
+  let server: Server;
+  let baseUrl: string;
+  let requests = 0;
+  const PAGE_ONE = "placeholder\n---\nis_urgent? The message conveys urgency\n";
+  const CASES = [
+    '{"id": "u-1", "state": "urgent: the payout failed", "expect": {"is_urgent": true}}',
+    '{"id": "u-2", "state": "urgent: checkout is down", "expect": {"is_urgent": true}}',
+    '{"id": "c-1", "state": "a question about the plan", "expect": {"is_urgent": false}}',
+    '{"id": "c-2", "state": "a note of thanks", "expect": {"is_urgent": false}}',
+  ].join("\n");
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString("utf8");
+      });
+      req.on("end", () => {
+        requests += 1;
+        const state = String((JSON.parse(body) as { state: unknown }).state);
+        if (state.includes("refuse")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "this state is not allowed" } }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            model: "jev-1",
+            answers: { is_urgent: { type: "noul", noul: state.includes("urgent") ? 0.9 : 0.1 } },
+            usage: { input_tokens: 10, output_tokens: 5 },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+
+  /** A run against the fake API, with the page on stdin and the cases in a file. */
+  function live(cases: string, args: readonly string[]): Promise<Attempt> {
+    const dir = mkdtempSync(join(tmpdir(), "jev-live-eval-"));
+    const path = join(dir, "cases.jsonl");
+    writeFileSync(path, cases);
+    requests = 0;
+    return jevAsync(["eval", "--cases", path, ...args], {
+      input: PAGE_ONE,
+      env: { TYPESAFE_API_KEY: "sk-test", TYPESAFE_BASE_URL: baseUrl },
+    }).finally(() => rmSync(dir, { recursive: true, force: true }));
+  }
+
+  it("asks once per case and counts what the API counted", async () => {
+    const { status, stdout, stderr } = await live(CASES, []);
+    expect(status).toBe(0);
+    expect(requests).toBe(4);
+    expect(stdout).toMatch(/0\.50 \*\s+1\.00\s+1\.00/);
+    expect(stdout).toContain("40 in / 20 out tokens");
+    expect(stderr).toContain("jev eval: 4 cases, ≈");
+  });
+
+  it("answers a second run from the cache, without sending anything", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jev-cache-"));
+    try {
+      const first = await live(CASES, ["--cache", dir]);
+      expect(first.status).toBe(0);
+      expect(requests).toBe(4);
+      const again = await live(CASES, ["--cache", dir]);
+      expect(requests).toBe(0);
+      expect(again.stdout).toBe(first.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to send when the estimate is above --max-cost", async () => {
+    const { status, stderr } = await live(CASES, [
+      "--max-cost",
+      "0.000001",
+      "--price",
+      "0.20/1.00",
+    ]);
+    expect(status).toBe(1);
+    expect(requests).toBe(0);
+    expect(stderr).toContain("refusing to send");
+  });
+
+  it("carries on when one case is refused, and says which", async () => {
+    const cases = `${CASES}\n{"id": "bad", "state": "refuse this one", "expect": {"is_urgent": true}}`;
+    const { status, stdout } = await live(cases, []);
+    expect(status).toBe(1);
+    expect(stdout).toContain("case 5 (bad):");
+    expect(stdout).toContain("5 cases · 4 answered · 1 error");
   });
 });

@@ -3,6 +3,19 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## 0.3.0
+
+### Added
+
+- **A rubric can be scored, not guessed at.** `jev eval <page> --cases cases.jsonl` runs a saved
+  page over a file of labelled states and reports how it did: a threshold sweep with precision,
+  recall and F1 per noul, a Brier score, a confusion matrix and a confidence gate per choice, and
+  exact, within-one and MAE per score. The cases are JSON Lines — `state` and `expect`, with a bad
+  line named by its line number before anything is sent. `--concurrency` sends a few at a time,
+  `--cache <dir>` makes a second run free, `--max-cost` refuses a run that would cost too much,
+  `--min-accuracy` fails one that scores too low, and `--json` prints the whole report for `jq`.
+  New `evaluate` module on both exports, plus `Case`, `Expectation`, `Outcome` and `Report`.
+
 ## 0.2.0
 
 ### Added
