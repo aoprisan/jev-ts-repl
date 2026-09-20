@@ -29,6 +29,7 @@ import * as sketch from "./sketch.js";
 /** The subcommands that run without a terminal. */
 export const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["run", "send the request and print the answers"],
+  ["eval", "run a page over a file of labelled cases and score the answers"],
   ["json", "the exact request body this session POSTs"],
   ["cost", "what a call costs, per question and on both sides of the wire"],
   ["ts", "the session as a TypeScript program"],
@@ -36,7 +37,7 @@ export const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["check", "parse the input and report what is wrong with it"],
 ];
 
-export type Command = "run" | "json" | "cost" | "ts" | "rust" | "check";
+export type Command = "run" | "eval" | "json" | "cost" | "ts" | "rust" | "check";
 
 /** Whether `word` names a subcommand, so `jev <word>` is not mistaken for a flag or a path. */
 export function isCommand(word: string): word is Command {
