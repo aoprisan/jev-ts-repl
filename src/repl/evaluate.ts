@@ -12,7 +12,7 @@
  * API belong to the caller.
  */
 
-import type { Json } from "../json.js";
+import type { Json, JsonObject } from "../json.js";
 import { compact, isEmptyValue, isObject, parseError, textOf, tryParse } from "../json.js";
 import type { ChoiceQuestion, Question } from "../typesafe/questions.js";
 import type {
@@ -23,10 +23,11 @@ import type {
   Usage,
 } from "../typesafe/responses.js";
 import { roundedLevel } from "../typesafe/responses.js";
-import { linesText } from "../tui/style.js";
+import type { Line } from "../tui/style.js";
+import { blankLine, line, linesText, span } from "../tui/style.js";
 import type { Cost, Rates } from "./cost.js";
 import * as cost from "./cost.js";
-import { errorLines } from "./format.js";
+import { BAD, bold, CHOICE, colorFor, dim, errorLines } from "./format.js";
 import type { Answered } from "./headless.js";
 import type { Parsed, Session } from "./session.js";
 
@@ -486,13 +487,9 @@ function usageOf(
     outputTokens += usage.outputTokens;
   }
   if (!counted) {
-    inputTokens = 0;
-    outputTokens = 0;
-    for (const one of cases) {
-      const estimate = cost.estimate(withState(session, one.state), model);
-      inputTokens += estimate.inputTokens;
-      outputTokens += estimate.outputTokens;
-    }
+    const estimate = preflight(session, cases, model, undefined);
+    inputTokens = estimate.inputTokens;
+    outputTokens = estimate.outputTokens;
   }
   return {
     inputTokens,
@@ -512,4 +509,278 @@ export function withState(session: Session, state: Json): Session {
 function mean(values: readonly number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/**
+ * The text report, as lines the terminal and the web can both draw.
+ *
+ * One block per question, in the page's order: what it scored, the sweep or the gate that says
+ * where to set the dial, and — for a choice — the matrix that says what it confuses with what.
+ */
+export function reportLines(report: Report): Line[] {
+  const out: Line[] = [];
+  const width = report.questions.reduce((wide, q) => Math.max(wide, [...q.name].length), 0);
+  for (const question of report.questions) {
+    if (out.length > 0) out.push(blankLine());
+    out.push(headerLine(question, width));
+    if (question.kind === "noul") out.push(...sweepLines(question, report.threshold));
+    else if (question.kind === "choice") {
+      out.push(...gateLines(question.gate, "accuracy"));
+      out.push(...confusionLines(question));
+    } else out.push(...gateLines(question.gate, "exact"));
+  }
+
+  if (report.errors.length > 0) {
+    if (out.length > 0) out.push(blankLine());
+    for (const failed of report.errors) out.push(...errorCaseLines(failed));
+  }
+
+  if (out.length > 0) out.push(blankLine());
+  const errors = report.errors.length;
+  out.push(
+    line([
+      span("  "),
+      bold(`${report.cases} case${report.cases === 1 ? "" : "s"}`),
+      dim(` · ${report.answered} answered · ${errors} error${errors === 1 ? "" : "s"}`),
+    ]),
+  );
+  out.push(usageLine(report.usage));
+  return out;
+}
+
+function headerLine(question: QuestionReport, width: number): Line {
+  const count = `${question.cases} case${question.cases === 1 ? "" : "s"}`;
+  const summary =
+    question.kind === "noul"
+      ? `${count} · Brier ${fixed(question.brier)}`
+      : question.kind === "choice"
+        ? `${count} · accuracy ${fixed(question.accuracy)}`
+        : `${count} · exact ${fixed(question.exact)} · within one ${fixed(question.withinOne)} · mae ${fixed(question.mae)}`;
+  return line([
+    span("  "),
+    bold(padEnd(question.name, width)),
+    span("  "),
+    span(padEnd(question.kind, 8), { fg: colorFor(question.kind) }),
+    dim(summary),
+  ]);
+}
+
+/** The sweep: what the threshold buys, row by row, with a `*` on the one this run used. */
+function sweepLines(question: NoulReport, threshold: number): Line[] {
+  const out: Line[] = [
+    line([
+      span("    "),
+      dim(padEnd("threshold", 12)),
+      dim(padEnd("acc", 6)),
+      dim(padEnd("prec", 7)),
+      dim(padEnd("rec", 7)),
+      dim("f1"),
+    ]),
+  ];
+  for (const row of question.sweep) {
+    const chosen = row.threshold === threshold;
+    out.push(
+      line([
+        span("    "),
+        span(
+          padEnd(`${fixed(row.threshold)}${chosen ? " *" : ""}`, 12),
+          chosen ? { bold: true } : {},
+        ),
+        span(padEnd(fixed(row.accuracy), 6)),
+        span(padEnd(rate(row.precision), 7)),
+        span(padEnd(rate(row.recall), 7)),
+        span(fixed(row.f1)),
+      ]),
+    );
+  }
+  out.push(line([span("    "), dim(`best f1 at ${fixed(question.best.threshold)}`)]));
+  return out;
+}
+
+function gateLines(gate: readonly GateRow[], accuracy: string): Line[] {
+  const out: Line[] = [
+    line([
+      span("    "),
+      dim(padEnd("confidence ≥", 15)),
+      dim(padEnd("coverage", 10)),
+      dim(accuracy),
+    ]),
+  ];
+  for (const row of gate) {
+    out.push(
+      line([
+        span("    "),
+        span(padEnd(fixed(row.confidence), 15)),
+        span(padEnd(fixed(row.coverage), 10)),
+        span(rate(row.accuracy)),
+      ]),
+    );
+  }
+  return out;
+}
+
+/** The matrix, which is where a rubric's real confusions show: what it calls what. */
+function confusionLines(question: ChoiceReport): Line[] {
+  const counts = question.confusion.flat().map((n) => String(n).length);
+  const column = (label: string): number => Math.max([...label].length, ...counts, 1) + 2;
+  const rowWidth =
+    question.confusion.reduce(
+      (wide, _row, at) => Math.max(wide, [...(question.labels[at] as string)].length),
+      0,
+    ) + 3;
+  const out: Line[] = [
+    line([span("    "), dim("confusion, rows expected, columns predicted")]),
+    line([
+      span(`    ${" ".repeat(rowWidth)}`),
+      dim(
+        question.labels
+          .map((label) => padEnd(label, column(label)))
+          .join("")
+          .trimEnd(),
+      ),
+    ]),
+  ];
+  question.confusion.forEach((row, at) => {
+    const expected = question.labels[at] as string;
+    out.push(
+      line([
+        span("    "),
+        span(padEnd(expected, rowWidth), { fg: CHOICE }),
+        span(
+          row
+            .map((count, column2) =>
+              padEnd(String(count), column(question.labels[column2] as string)),
+            )
+            .join("")
+            .trimEnd(),
+        ),
+      ]),
+    );
+  });
+  return out;
+}
+
+function errorCaseLines(failed: CaseError): Line[] {
+  const name = `case ${failed.case}${failed.id === undefined ? "" : ` (${failed.id})`}`;
+  const [first, ...rest] = failed.message.split("\n");
+  const out: Line[] = [
+    line([span("  "), span(`${name}: `, { fg: BAD }), span((first ?? "").trim())]),
+  ];
+  for (const more of rest) out.push(line([span("    "), dim(more.trim())]));
+  return out;
+}
+
+function usageLine(usage: ReportUsage): Line {
+  const money = usage.cost === undefined ? "" : ` · ${cost.usd(usage.cost.total)}`;
+  const tokens = `${usage.inputTokens} in / ${usage.outputTokens} out tokens${money}`;
+  return usage.estimated
+    ? line([span("  "), dim(`≈ ${tokens} — estimated, nothing was counted`)])
+    : line([span("  "), dim(tokens)]);
+}
+
+/** The JSON report, ready for `pretty`. Numbers keep their precision; what is undefined is null. */
+export function reportJson(report: Report): Json {
+  const questions: JsonObject = {};
+  for (const question of report.questions) questions[question.name] = questionJson(question);
+  const usage: JsonObject = {
+    inputTokens: report.usage.inputTokens,
+    outputTokens: report.usage.outputTokens,
+    estimated: report.usage.estimated,
+  };
+  if (report.usage.cost !== undefined) usage["cost"] = report.usage.cost.total;
+  return {
+    model: report.model,
+    threshold: report.threshold,
+    cases: report.cases,
+    answered: report.answered,
+    errors: report.errors.map((failed) => {
+      const out: JsonObject = { case: failed.case };
+      if (failed.id !== undefined) out["id"] = failed.id;
+      out["message"] = failed.message;
+      return out;
+    }),
+    questions,
+    usage,
+  };
+}
+
+function questionJson(question: QuestionReport): Json {
+  if (question.kind === "noul") {
+    return {
+      kind: question.kind,
+      cases: question.cases,
+      brier: question.brier,
+      accuracy: question.accuracy,
+      best: { threshold: question.best.threshold, f1: question.best.f1 },
+      sweep: question.sweep.map((row) => ({
+        threshold: row.threshold,
+        tp: row.tp,
+        fp: row.fp,
+        fn: row.fn,
+        tn: row.tn,
+        accuracy: row.accuracy,
+        precision: row.precision ?? null,
+        recall: row.recall ?? null,
+        f1: row.f1,
+      })),
+    };
+  }
+  if (question.kind === "choice") {
+    return {
+      kind: question.kind,
+      cases: question.cases,
+      accuracy: question.accuracy,
+      labels: question.labels.slice(),
+      confusion: question.confusion.map((row) => row.slice()),
+      gate: question.gate.map(gateJson),
+    };
+  }
+  return {
+    kind: question.kind,
+    cases: question.cases,
+    exact: question.exact,
+    withinOne: question.withinOne,
+    mae: question.mae,
+    gate: question.gate.map(gateJson),
+  };
+}
+
+function gateJson(row: GateRow): Json {
+  return { confidence: row.confidence, coverage: row.coverage, accuracy: row.accuracy ?? null };
+}
+
+/** The preflight estimate: tokens summed over every case, priced when rates are known. */
+export function preflight(
+  session: Session,
+  cases: readonly Case[],
+  model: string,
+  rates: Rates | undefined,
+): { cases: number; inputTokens: number; outputTokens: number; cost: Cost | undefined } {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const one of cases) {
+    const estimate = cost.estimate(withState(session, one.state), model);
+    inputTokens += estimate.inputTokens;
+    outputTokens += estimate.outputTokens;
+  }
+  return {
+    cases: cases.length,
+    inputTokens,
+    outputTokens,
+    cost: rates === undefined ? undefined : cost.price(inputTokens, outputTokens, rates),
+  };
+}
+
+function fixed(n: number): string {
+  return n.toFixed(2);
+}
+
+/** A rate that was never defined is a dot, not a zero: nothing was measured. */
+function rate(n: number | undefined): string {
+  return n === undefined ? "·" : fixed(n);
+}
+
+function padEnd(text: string, width: number): string {
+  const length = [...text].length;
+  return length >= width ? text : text + " ".repeat(width - length);
 }

@@ -2,9 +2,11 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { Json } from "../src/json.js";
 import * as evaluate from "../src/repl/evaluate.js";
 import * as headless from "../src/repl/headless.js";
 import { Session } from "../src/repl/session.js";
+import { linesText } from "../src/tui/style.js";
 import { raw } from "../src/typesafe/questions.js";
 import type { Answer, Usage } from "../src/typesafe/responses.js";
 
@@ -433,5 +435,136 @@ describe("the runner", () => {
       16,
     );
     expect(outcomes).toHaveLength(1);
+  });
+});
+
+describe("the report as text", () => {
+  const lines = [
+    '{"id": "t-001", "state": "one", "expect": {"is_urgent": true, "department": "billing", "frustration": 2}}',
+    '{"state": "two", "expect": {"is_urgent": false, "department": "technical", "frustration": 0}}',
+    '{"state": "three", "expect": {"is_urgent": true, "department": "sales"}}',
+  ];
+  const every = (noulP: number, label: string, level: number): Record<string, Answer> => ({
+    is_urgent: noul(noulP),
+    department: choice(label, 0.7),
+    frustration: score(level, 0.4),
+  });
+  const report = scored(lines, [
+    answered(every(0.9, "billing", 2), { inputTokens: 100, outputTokens: 20 }),
+    answered(every(0.2, "sales", 1), { inputTokens: 100, outputTokens: 20 }),
+    { ok: false, error: "Timeout  the request did not complete\n    kind: timeout" },
+  ]);
+  const text = linesText(evaluate.reportLines(report));
+
+  it("gives every question a block that says what it is and what it scored", () => {
+    expect(text).toContain("is_urgent");
+    expect(text).toMatch(/noul\s+2 cases · Brier/);
+    expect(text).toMatch(/choice\s+2 cases · accuracy/);
+    expect(text).toMatch(/score\s+2 cases · exact 0.50 · within one 1.00 · mae 0.50/);
+  });
+
+  it("marks the threshold this run used, and names the best one", () => {
+    expect(text).toContain("0.50 *");
+    expect(text).toMatch(/best f1 at \d\.\d\d/);
+  });
+
+  it("draws the gate and the matrix", () => {
+    expect(text).toContain("confidence ≥");
+    expect(text).toContain("confusion, rows expected, columns predicted");
+    expect(text).toContain("technical");
+  });
+
+  it("names the cases that did not answer, and totals the run", () => {
+    expect(text).toContain("case 3: Timeout");
+    expect(text).toContain("3 cases · 2 answered · 1 error");
+    expect(text).toContain("200 in / 40 out tokens");
+  });
+
+  it("marks an estimate as one", () => {
+    const guessed = scored(lines.slice(0, 1), [answered(every(0.9, "billing", 2))]);
+    const line = linesText(evaluate.reportLines(guessed));
+    expect(line).toContain("≈");
+    expect(line).toContain("estimated, nothing was counted");
+  });
+
+  it("prints a dot where a rate was never defined", () => {
+    expect(text).toContain("·");
+  });
+});
+
+describe("the report as JSON", () => {
+  const report = scored(
+    [
+      '{"id": "t-001", "state": "one", "expect": {"is_urgent": true, "department": "billing"}}',
+      '{"state": "two", "expect": {"is_urgent": false, "department": "technical"}}',
+    ],
+    [
+      answered(
+        { is_urgent: noul(0.85), department: choice("billing", 0.9) },
+        {
+          inputTokens: 100,
+          outputTokens: 20,
+        },
+      ),
+      answered(
+        { is_urgent: noul(0.45), department: choice("legal", 0.1) },
+        {
+          inputTokens: 100,
+          outputTokens: 20,
+        },
+      ),
+    ],
+    { rates: { input: 0.2, output: 1 } },
+  );
+  const json = evaluate.reportJson(report);
+
+  it("has the shape a script can read", () => {
+    expect(json).toMatchObject({
+      model: "jev-latest",
+      threshold: 0.5,
+      cases: 2,
+      answered: 2,
+      errors: [],
+      questions: {
+        is_urgent: { kind: "noul", cases: 2, accuracy: 1 },
+        department: { kind: "choice", labels: ["billing", "technical", "sales", "other"] },
+      },
+      usage: { inputTokens: 200, outputTokens: 40, estimated: false },
+    });
+    const urgent = (json as Record<string, Record<string, Record<string, Json>>>)["questions"]?.[
+      "is_urgent"
+    ];
+    expect(urgent?.["best"]).toMatchObject({ threshold: 0.5, f1: 1 });
+    expect((urgent?.["sweep"] as Array<Record<string, Json>>)[0]).toMatchObject({
+      threshold: 0.1,
+      tp: 1,
+      fp: 1,
+      fn: 0,
+      tn: 0,
+    });
+  });
+
+  it("keeps what is undefined as null, so the keys are always there", () => {
+    const rows = (json as Record<string, Record<string, Record<string, Json>>>)["questions"]?.[
+      "is_urgent"
+    ]?.["sweep"] as Array<Record<string, Json>>;
+    expect(rows[rows.length - 1]).toMatchObject({ threshold: 0.9, precision: null, recall: 0 });
+  });
+
+  it("round-trips through JSON.stringify", () => {
+    expect(JSON.parse(JSON.stringify(json))).toEqual(json);
+  });
+});
+
+describe("the preflight", () => {
+  it("adds up what every case would cost before anything is sent", () => {
+    const s = session();
+    const parsed = cases(URGENT.join("\n"), s);
+    const one = evaluate.preflight(s, parsed.slice(0, 1), "jev-latest", undefined);
+    const all = evaluate.preflight(s, parsed, "jev-latest", { input: 0.2, output: 1 });
+    expect(all.cases).toBe(4);
+    expect(all.inputTokens).toBeGreaterThan(one.inputTokens);
+    expect(all.cost?.total).toBeGreaterThan(0);
+    expect(one.cost).toBeUndefined();
   });
 });
