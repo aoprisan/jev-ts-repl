@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 
-const { App, Client, Session, choice, mock, noul, questionsToJson, score, sketch } =
+const { App, Client, Session, choice, evaluate, mock, noul, questionsToJson, score, sketch } =
   await import("../dist/index.js");
 
 // The wire format, the thing every other SDK has to agree with.
@@ -54,6 +54,15 @@ assert.deepEqual(
   ["department", "frustration", "is_urgent"],
 );
 assert.ok(app.lastRaw, "the session produced no answers");
+
+// A cases file is read against the page it will be scored with.
+const graded = sketch.parse("A ticket.\n---\nis_urgent? Conveys urgency\n").toSession();
+const cases = evaluate.parseCases(
+  '{"state": "a payout failed", "expect": {"is_urgent": true}}',
+  graded,
+);
+assert.equal(cases.ok, true, "the cases file did not parse");
+assert.equal(cases.value[0].expect.is_urgent.yes, true);
 
 // The client is constructible, and refuses to be built without a key.
 assert.equal(typeof Client.fromEnv, "function");

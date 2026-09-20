@@ -37,6 +37,8 @@ export * as cost from "./repl/cost.js";
 export type { Cost, Estimate, QuestionEstimate, Rates } from "./repl/cost.js";
 export { Editor, PREVIEWS } from "./repl/editor.js";
 export type { Outcome as EditorOutcome, Preview } from "./repl/editor.js";
+export * as evaluate from "./repl/evaluate.js";
+export type { Case, Expectation, Outcome, Report } from "./repl/evaluate.js";
 export * as format from "./repl/format.js";
 export * as headless from "./repl/headless.js";
 export type { Answered, Command as HeadlessCommand } from "./repl/headless.js";
