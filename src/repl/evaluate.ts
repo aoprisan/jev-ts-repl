@@ -23,8 +23,10 @@ import type {
   Usage,
 } from "../typesafe/responses.js";
 import { roundedLevel } from "../typesafe/responses.js";
+import { linesText } from "../tui/style.js";
 import type { Cost, Rates } from "./cost.js";
 import * as cost from "./cost.js";
+import { errorLines } from "./format.js";
 import type { Answered } from "./headless.js";
 import type { Parsed, Session } from "./session.js";
 
@@ -140,6 +142,37 @@ function expected(name: string, question: Question, value: Json): Parsed<Expecta
 export type Outcome =
   | { readonly ok: true; readonly answers: readonly Answered[]; readonly usage?: Usage }
   | { readonly ok: false; readonly error: string };
+
+/**
+ * Send every case through `ask`, at most `concurrency` at a time; results are in case order.
+ *
+ * The workers pull from a shared index rather than being handed a slice each, so a slow case holds
+ * up nothing but itself, and a case that throws is recorded and stepped over: a file of a thousand
+ * labels should not be lost to one timeout.
+ */
+export function run(
+  session: Session,
+  cases: readonly Case[],
+  ask: (session: Session) => Promise<Outcome>,
+  concurrency: number,
+): Promise<Outcome[]> {
+  const outcomes: Outcome[] = new Array<Outcome>(cases.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const at = next++;
+      const one = cases[at];
+      if (one === undefined) return;
+      try {
+        outcomes[at] = await ask(withState(session, one.state));
+      } catch (e) {
+        outcomes[at] = { ok: false, error: linesText(errorLines(e)).trim() };
+      }
+    }
+  };
+  const workers = Math.max(1, Math.min(Math.floor(concurrency), cases.length));
+  return Promise.all(Array.from({ length: workers }, () => worker())).then(() => outcomes);
+}
 
 /** One row of a noul's threshold sweep: the confusion counts, and what they come to. */
 export interface SweepRow {

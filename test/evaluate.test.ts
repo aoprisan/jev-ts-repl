@@ -359,3 +359,79 @@ describe("the accuracy bar", () => {
     expect(evaluate.belowBar(report, 0.4)).toEqual([]);
   });
 });
+
+describe("the runner", () => {
+  const lines = [0, 1, 2, 3, 4].map((i) => `{"state": "case ${i}", "expect": {"is_urgent": true}}`);
+
+  it("keeps at most `concurrency` calls in the air, and asks every case once", async () => {
+    const s = session();
+    const asked: string[] = [];
+    let flying = 0;
+    let most = 0;
+    const outcomes = await evaluate.run(
+      s,
+      cases(lines.join("\n"), s),
+      async (one) => {
+        flying += 1;
+        most = Math.max(most, flying);
+        asked.push(String(one.state));
+        await new Promise((done) => setTimeout(done, 5));
+        flying -= 1;
+        return answered({ is_urgent: noul(0.9) });
+      },
+      2,
+    );
+    expect(most).toBe(2);
+    expect(asked.sort()).toEqual(lines.map((_, i) => `case ${i}`));
+    expect(outcomes).toHaveLength(5);
+  });
+
+  it("reports in case order however the calls finished", async () => {
+    const s = session();
+    const parsed = cases(lines.join("\n"), s);
+    const outcomes = await evaluate.run(
+      s,
+      parsed,
+      async (one) => {
+        const at = Number(String(one.state).slice(5));
+        // The last case answers first, the first case last.
+        await new Promise((done) => setTimeout(done, (parsed.length - at) * 4));
+        return answered({ is_urgent: noul(at / 10) });
+      },
+      5,
+    );
+    expect(
+      outcomes.map((outcome) =>
+        outcome.ok ? (outcome.answers[0]?.[1] as { noul: number }).noul : -1,
+      ),
+    ).toEqual([0, 0.1, 0.2, 0.3, 0.4]);
+  });
+
+  it("turns a rejected call into an outcome and carries on", async () => {
+    const s = session();
+    const outcomes = await evaluate.run(
+      s,
+      cases(lines.join("\n"), s),
+      async (one) => {
+        if (one.state === "case 2") throw new Error("the socket went away");
+        return answered({ is_urgent: noul(0.9) });
+      },
+      2,
+    );
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(4);
+    const failed = outcomes[2];
+    expect(failed?.ok).toBe(false);
+    expect(failed?.ok === false && failed.error).toContain("the socket went away");
+  });
+
+  it("does not mind more workers than there are cases", async () => {
+    const s = session();
+    const outcomes = await evaluate.run(
+      s,
+      cases(lines[0] as string, s),
+      async () => answered({ is_urgent: noul(0.9) }),
+      16,
+    );
+    expect(outcomes).toHaveLength(1);
+  });
+});
