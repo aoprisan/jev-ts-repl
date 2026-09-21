@@ -51,6 +51,20 @@ export type { Preset } from "./repl/presets.js";
 export { LESSONS } from "./repl/lessons.js";
 export type { Lesson } from "./repl/lessons.js";
 
+// The agent side: the MCP server's protocol half, and where an agent's files go.
+export * as mcp from "./agent/mcp.js";
+export type { Host as McpHost, Result as McpResult, Sent, Tool as McpTool } from "./agent/mcp.js";
+export * as install from "./agent/install.js";
+export type {
+  ClientId,
+  ClientSpec,
+  Kind as InstallKind,
+  Scope as InstallScope,
+  Server as McpServerEntry,
+  Target as InstallTarget,
+} from "./agent/install.js";
+export { SKILL_FILE, SKILL_MD, SKILL_NAME } from "./agent/skill.js";
+
 // Answer formatting, shared by every host: the same bars and labels the terminal draws.
 export * as format from "./repl/format.js";
 export * as highlight from "./repl/highlight.js";

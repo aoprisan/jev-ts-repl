@@ -1,5 +1,8 @@
 /** Ready-made sessions to poke at: `:preset <name>`. */
 
+import { render } from "./sketch.js";
+import { parseChoice, parseNoul, parseRaw, parseScore, Session } from "./session.js";
+
 export interface Preset {
   readonly name: string;
   readonly about: string;
@@ -52,4 +55,36 @@ export const PRESETS: readonly Preset[] = [
 
 export function find(name: string): Preset | undefined {
   return PRESETS.find((p) => p.name === name);
+}
+
+/**
+ * A preset as a sketch page — the same session `:preset` builds, written out the way a file is.
+ *
+ * The scripts are REPL lines because that is how the REPL loads them; anything outside a terminal
+ * (the MCP server, a `jev` example, the docs) wants the page instead.
+ */
+export function page(preset: Preset): string {
+  const session = new Session();
+  for (const line of preset.script) {
+    const at = line.search(/\s/);
+    const command = at === -1 ? line : line.slice(0, at);
+    const args = at === -1 ? "" : line.slice(at + 1);
+    if (command === ":state") {
+      session.state = args;
+      continue;
+    }
+    const parsed =
+      command === ":noul"
+        ? parseNoul(args)
+        : command === ":choice"
+          ? parseChoice(args)
+          : command === ":score"
+            ? parseScore(args)
+            : command === ":raw"
+              ? parseRaw(args)
+              : undefined;
+    // A preset that does not parse is a bug in this file, not in the caller's input.
+    if (parsed?.ok) session.insert(...parsed.value);
+  }
+  return render(session);
 }

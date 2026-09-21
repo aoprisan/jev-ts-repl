@@ -8,7 +8,9 @@
     "repl",
     "tui",
     "cli",
-    "classification"
+    "classification",
+    "mcp",
+    "agent-skill"
   ],
   "license": "MIT",
   "author": "Andrei Oprisan",
@@ -58,7 +60,8 @@
     "start": "node --experimental-strip-types src/cli.ts",
     "test:unit": "vitest run",
     "build:web": "node scripts/build-web.mjs",
-    "icons": "node scripts/icons.mjs"
+    "icons": "node scripts/icons.mjs",
+    "skill": "node scripts/skill.mjs && prettier --write src/agent/skill.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
