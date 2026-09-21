@@ -28,6 +28,8 @@ import {
 } from "jev-repl/core";
 
 import { clear, h, lines as styledLines } from "./dom.js";
+import type { Kind } from "./seeds.js";
+import { seed } from "./seeds.js";
 import { applyAll, apply as applyCommand } from "./script.js";
 import * as share from "./share.js";
 import {
@@ -480,7 +482,7 @@ function freeName(session: SessionType): string {
   }
 }
 
-function addQuestion(kind: "noul" | "choice" | "score"): void {
+function addQuestion(kind: Kind): void {
   const page = parsed();
   if (!page.ok()) {
     say("fix the page's problems first");
@@ -488,10 +490,7 @@ function addQuestion(kind: "noul" | "choice" | "score"): void {
   }
   const session = page.toSession();
   const name = freeName(session);
-  if (kind === "noul") session.insert(name, noul("What this asks"));
-  else if (kind === "choice")
-    session.insert(name, choice("What this asks", [["first", null] as ChoiceOption]));
-  else session.insert(name, score("What this asks", ["low", "high"]));
+  session.insert(name, seed(kind));
   commit(session);
 }
 
@@ -894,9 +893,7 @@ function wire(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-add]")) {
-    button.addEventListener("click", () =>
-      addQuestion(button.dataset["add"] as "noul" | "choice" | "score"),
-    );
+    button.addEventListener("click", () => addQuestion(button.dataset["add"] as Kind));
   }
 
   el<HTMLButtonElement>("ask").addEventListener("click", () => void ask());

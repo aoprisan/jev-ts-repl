@@ -28,6 +28,10 @@ pre-1.0, so a minor bump may still move the surface under you.
   quietly overwrite the first.
 - **The web build tab names new questions apart.** Adding a question after removing one picked a
   name that was still in use and replaced that question instead of adding one.
+- **"+ choice" no longer breaks the build tab.** It seeded a choice with a single option, and one
+  option is not a choice: the page the tab had just written would not parse, so the cards vanished
+  behind "The page has problems" and every further add was refused. Seeds now round-trip, which a
+  test holds them to.
 
 ## 0.5.0
 
