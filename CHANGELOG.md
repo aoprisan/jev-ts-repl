@@ -3,7 +3,7 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
-## Unreleased
+## 0.5.0
 
 ### Added
 
