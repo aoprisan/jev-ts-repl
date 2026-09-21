@@ -15,8 +15,9 @@ import type { Question } from "../typesafe/questions.js";
 import { questionToJson } from "../typesafe/questions.js";
 import type { Color, Line, Span } from "../tui/style.js";
 import { line, span } from "../tui/style.js";
-import type { Estimate, Rates } from "./cost.js";
-import { formatRates, priceEstimate, usd } from "./cost.js";
+import type { Estimate, Rates, Thread } from "./cost.js";
+import { formatRates, price, priceEstimate, usd } from "./cost.js";
+import type { Turn } from "./session.js";
 
 export const NOUL: Color = "cyan";
 export const CHOICE: Color = "magenta";
@@ -177,15 +178,19 @@ export function costLines(
   estimate: Estimate,
   rates: Rates | undefined,
   hint = "set a price to see the money: dollars per million tokens, input then output",
+  thread?: Thread,
 ): Line[] {
   const names = [...estimate.questions.map((q) => q.name), "state", "envelope", "total"];
   const pad = names.reduce((width, name) => Math.max(width, [...name].length), 0);
+  // `noul` and `choice` fit the seven the table has always been; a long enough thread does not.
+  const turns = thread === undefined ? "" : `${thread.turns} turn${thread.turns === 1 ? "" : "s"}`;
+  const kindPad = Math.max(7, [...turns].length);
   const row = (name: string, kind: string, input: string, output: string, style?: Color): Line =>
     line([
       span("  "),
       span(padEnd(name, pad), style === undefined ? {} : { fg: style }),
       span("  "),
-      dim(padEnd(kind, 7)),
+      dim(padEnd(kind, kindPad)),
       span(padStart(input, 6)),
       span(padStart(output, 6)),
     ]);
@@ -195,7 +200,7 @@ export function costLines(
       span("  "),
       dim(padEnd("", pad)),
       span("  "),
-      dim(padEnd("", 7)),
+      dim(padEnd("", kindPad)),
       dim(padStart("in", 6)),
       dim(padStart("out", 6)),
     ]),
@@ -211,7 +216,7 @@ export function costLines(
       ),
     );
   }
-  out.push(row("state", "", String(estimate.stateTokens), "·"));
+  out.push(row("state", turns, String(estimate.stateTokens), "·"));
   out.push(
     row("envelope", "", String(estimate.envelopeTokens), String(estimate.answerEnvelopeTokens)),
   );
@@ -220,7 +225,7 @@ export function costLines(
       span("  "),
       bold(padEnd("total", pad)),
       span("  "),
-      dim(padEnd("", 7)),
+      dim(padEnd("", kindPad)),
       bold(padStart(String(estimate.inputTokens), 6)),
       bold(padStart(String(estimate.outputTokens), 6)),
       dim(`   ${estimate.inputTokens + estimate.outputTokens} tokens per call`),
@@ -229,6 +234,7 @@ export function costLines(
 
   if (rates === undefined) {
     out.push(line([span("    "), dim(`no rates set — ${hint}`)]));
+    out.push(...threadLines(thread, rates));
     return out;
   }
   const cost = priceEstimate(estimate, rates);
@@ -242,7 +248,44 @@ export function costLines(
     ]),
   );
   out.push(line([span("    "), dim(`at ${formatRates(rates)}`)]));
+  out.push(...threadLines(thread, rates));
   return out;
+}
+
+/**
+ * The line under the table when the state is a conversation: a call per turn, all of it added up.
+ *
+ * A thread is sent whole every time it is asked about, so the tokens grow with the square of the
+ * turns rather than with the transcript. Saying so once, in numbers, is cheaper than finding out.
+ */
+function threadLines(thread: Thread | undefined, rates: Rates | undefined): Line[] {
+  if (thread === undefined) return [];
+  const calls = `${thread.turns} call${thread.turns === 1 ? "" : "s"}`;
+  const total = thread.inputTokens + thread.outputTokens;
+  const spans: Span[] = [
+    span("    "),
+    dim("asked after every turn: "),
+    span(calls),
+    dim(`, ${thread.inputTokens} in / ${thread.outputTokens} out`),
+    dim(`   ${total} tokens for the thread`),
+  ];
+  if (rates !== undefined) {
+    const spent = price(thread.inputTokens, thread.outputTokens, rates);
+    spans.push(dim("   ·   "), span(usd(spent.total), { fg: SCORE }));
+  }
+  return [line(spans)];
+}
+
+/** One turn of the conversation held as the state, as `:turn` and `:state` echo it back. */
+export function turnLines(index: number, turn: Turn): Line[] {
+  return [
+    line([
+      dim(`  ${index + 1}. `),
+      turn.who === undefined ? dim("(unattributed)") : span(turn.who, { fg: ACCENT }),
+      span("  "),
+      span(turn.said),
+    ]),
+  ];
 }
 
 /** One line per question, the way it will go on the wire. */

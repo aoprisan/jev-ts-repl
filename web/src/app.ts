@@ -518,7 +518,14 @@ function drawPreview(): void {
     }
     preview.append(
       h("div", { class: "answer" }, [
-        styledLines(format.costLines(cost.estimate(session, model), rates(), HOW_TO_PRICE)),
+        styledLines(
+          format.costLines(
+            cost.estimate(session, model),
+            rates(),
+            HOW_TO_PRICE,
+            cost.thread(session, model),
+          ),
+        ),
       ]),
     );
     preview.append(
@@ -602,7 +609,14 @@ function previewText(): string {
     case "rust":
       return codegen.rust(session, model, state.settings.threshold);
     case "cost":
-      return linesText(format.costLines(cost.estimate(session, model), rates(), HOW_TO_PRICE));
+      return linesText(
+        format.costLines(
+          cost.estimate(session, model),
+          rates(),
+          HOW_TO_PRICE,
+          cost.thread(session, model),
+        ),
+      );
     case "answers":
       return state.last ? JSON.stringify(state.last.raw, null, 2) : "";
   }

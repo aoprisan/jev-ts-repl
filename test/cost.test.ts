@@ -263,3 +263,59 @@ describe("the cost table", () => {
     expect(text).toContain("per call");
   });
 });
+
+describe("what a conversation costs", () => {
+  function thread(): App {
+    const a = app();
+    a.exec(":preset triage");
+    a.exec(":state clear");
+    a.exec(":turn customer: The payout failed again, third time this month.");
+    a.exec(":turn agent: Sorry about that — can you confirm the last four digits?");
+    a.exec(":turn customer: I have sent them twice already. I want a refund now.");
+    return a;
+  }
+
+  it("estimates one call per turn, each over a longer state", () => {
+    const a = thread();
+    const estimated = cost.thread(a.session, "jev-latest");
+    expect(estimated?.turns).toBe(3);
+    const inputs = estimated?.calls.map((c) => c.inputTokens) ?? [];
+    expect(inputs).toHaveLength(3);
+    expect(inputs[0]).toBeLessThan(inputs[1] as number);
+    expect(inputs[1]).toBeLessThan(inputs[2] as number);
+    expect(estimated?.inputTokens).toBe(inputs.reduce((s, n) => s + n, 0));
+  });
+
+  it("costs more than the last call alone, which is the point of saying it", () => {
+    const a = thread();
+    const one = cost.estimate(a.session, "jev-latest");
+    const whole = cost.thread(a.session, "jev-latest");
+    expect(whole?.inputTokens).toBeGreaterThan(one.inputTokens);
+    expect(whole?.calls[2]?.inputTokens).toBe(one.inputTokens);
+  });
+
+  it("says nothing about a state that is not a conversation", () => {
+    const a = app();
+    a.exec(":preset triage");
+    expect(cost.thread(a.session, "jev-latest")).toBeUndefined();
+  });
+
+  it("puts the turn count and the thread total in the table", () => {
+    const a = thread();
+    a.rates = { input: 0.2, output: 1 };
+    a.transcript = [];
+    a.exec(":cost");
+    const text = transcript(a);
+    expect(text).toContain("3 turns");
+    expect(text).toContain("asked after every turn: 3 calls");
+    expect(text).toMatch(/tokens for the thread/);
+  });
+
+  it("leaves the table alone when the state is one message", () => {
+    const a = app();
+    a.exec(":preset triage");
+    a.transcript = [];
+    a.exec(":cost");
+    expect(transcript(a)).not.toContain("asked after every turn");
+  });
+});

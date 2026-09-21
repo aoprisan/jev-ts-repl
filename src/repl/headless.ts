@@ -85,7 +85,10 @@ function describe(session: Session): string {
   const n = session.questions.length;
   const kinds = session.questions.map(([name, q]) => `${name} (${q.kind})`).join(", ");
   const head = `${n} question${n === 1 ? "" : "s"}${kinds === "" ? "" : `: ${kinds}`}`;
-  return session.stateIsEmpty() ? `${head}\nno state — pass --state <text> before sending` : head;
+  if (session.stateIsEmpty()) return `${head}\nno state — pass --state <text> before sending`;
+  const turns = session.turns();
+  if (turns === undefined) return head;
+  return `${head}\nthe state is a conversation of ${turns.length} turn${turns.length === 1 ? "" : "s"}`;
 }
 
 /** Why this session cannot be sent yet, if it cannot. */
@@ -131,7 +134,7 @@ export function answersJson(answers: readonly Answered[], model: string, raw?: J
 export function costText(session: Session, model: string, rates: Rates | undefined): string {
   const estimate = cost.estimate(session, model);
   const hint = "--price 0.20/1.00 prices it: dollars per million tokens, input then output";
-  return `${linesText(costLines(estimate, rates, hint))}\n`;
+  return `${linesText(costLines(estimate, rates, hint, cost.thread(session, model)))}\n`;
 }
 
 /** The one-line footer under an answer page: tokens, and money when the rates are known. */

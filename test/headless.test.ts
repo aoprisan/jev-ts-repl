@@ -88,6 +88,13 @@ describe("check", () => {
     if (checked.ok) expect(checked.value).toContain("no state");
   });
 
+  it("says when the state is a conversation rather than one message", () => {
+    const page = '[{"who": "customer", "said": "Refund me"}]\n---\nis_urgent? conveys urgency\n';
+    const checked = headless.checkText(page);
+    expect(checked.ok).toBe(true);
+    if (checked.ok) expect(checked.value).toContain("conversation of 1 turn");
+  });
+
   it("passes a request body through the same check", () => {
     const checked = headless.checkText('{"state": "hi", "questions": {}}');
     expect(checked.ok).toBe(true);
