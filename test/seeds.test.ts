@@ -1,10 +1,15 @@
-/** The page the web build tab writes has to be a page it can read back. */
+/**
+ * A seeded question has to survive the round trip its editor makes of it.
+ *
+ * The web build tab writes the page and then reads it back, so a seed the notation cannot parse
+ * takes the tab down: this is the test that says it must.
+ */
 
 import { describe, expect, it } from "vitest";
 
 import { Session } from "../src/repl/session.js";
 import { parse, render } from "../src/repl/sketch.js";
-import { KINDS, seed } from "../web/src/seeds.js";
+import { KINDS, seed } from "../src/repl/seeds.js";
 
 describe("what the build tab adds", () => {
   it("seeds a question the notation reads back", () => {

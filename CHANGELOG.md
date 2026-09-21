@@ -19,6 +19,8 @@ pre-1.0, so a minor bump may still move the surface under you.
   named and typed rather than re-selected each time.
 - New `isWordLeft`, `isWordRight`, `isDeleteWordLeft`, `wordLeft` and `wordRight` on the exports,
   alongside the key decoder — the bindings and the motion a text field needs to answer Alt-arrow.
+- New `seed` and `KINDS` on both exports: a blank question of each kind, filled in enough to be a
+  page that parses. `Kind` moves to the same module and is re-exported where it was.
 
 ### Fixed
 

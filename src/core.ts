@@ -22,6 +22,10 @@ export * from "./typesafe/index.js";
 export type { Json, JsonObject } from "./json.js";
 export { compact, isEmptyValue, isObject, pretty, textOf } from "./json.js";
 
+// A blank question of each kind, for a front end that adds one.
+export { KINDS, seed } from "./repl/seeds.js";
+export type { Kind } from "./repl/seeds.js";
+
 // The session: what a request is made of, and the one-line commands that build it.
 export {
   fromBody,

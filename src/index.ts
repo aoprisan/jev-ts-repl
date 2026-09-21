@@ -47,6 +47,7 @@ export { SKILL_FILE, SKILL_MD, SKILL_NAME } from "./agent/skill.js";
 export { App, COMMANDS } from "./repl/app.js";
 export type { Msg } from "./repl/app.js";
 export { Builder } from "./repl/builder.js";
+export { KINDS, seed } from "./repl/seeds.js";
 export type { Field, Kind, Outcome as BuilderOutcome } from "./repl/builder.js";
 export * as codegen from "./repl/codegen.js";
 export * as cost from "./repl/cost.js";

@@ -13,11 +13,11 @@ import {
 import type { KeyEvent } from "../tui/keys.js";
 import { isCtrl } from "../tui/keys.js";
 import { isWordLeft, isWordRight, wordLeft, wordRight } from "../tui/words.js";
+import type { Kind } from "./seeds.js";
+import { KINDS } from "./seeds.js";
 import { value } from "./session.js";
 
-export type Kind = "noul" | "choice" | "score";
-
-const KINDS: readonly Kind[] = ["noul", "choice", "score"];
+export type { Kind };
 
 export function kindAbout(kind: Kind): string {
   switch (kind) {

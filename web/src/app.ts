@@ -7,7 +7,14 @@
  * goes through the same `Client`. This file is a view.
  */
 
-import type { Answer, ChoiceOption, Json, Question, Session as SessionType } from "jev-repl/core";
+import type {
+  Answer,
+  ChoiceOption,
+  Json,
+  Kind,
+  Question,
+  Session as SessionType,
+} from "jev-repl/core";
 import {
   choice,
   Client,
@@ -23,13 +30,12 @@ import {
   noul,
   PRESETS,
   score,
+  seed,
   Session,
   sketch,
 } from "jev-repl/core";
 
 import { clear, h, lines as styledLines } from "./dom.js";
-import type { Kind } from "./seeds.js";
-import { seed } from "./seeds.js";
 import { applyAll, apply as applyCommand } from "./script.js";
 import * as share from "./share.js";
 import {
