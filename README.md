@@ -353,6 +353,10 @@ Node 18.17 or newer (it uses the built-in `fetch`), and a terminal for the REPL 
 `:cost` what a call spends.
 Keys: Ctrl-T try the lesson's command · Ctrl-N next lesson · Ctrl-K sketch · Ctrl-B build ·
 PgUp/PgDn scroll · Ctrl-L clear · Ctrl-C quit.
+Alt-←/→ cross a word wherever there is text to edit, Alt-Backspace deletes one, and in sketch
+mode Alt-↑/↓ move the line under the cursor. Terminals spell Alt in several ways — a modified
+arrow, an Esc prefix, or `Alt-b`/`Alt-f` — and all of them are read; Ctrl-←/→ works too, for the
+terminals that send only that.
 
 ## Development
 

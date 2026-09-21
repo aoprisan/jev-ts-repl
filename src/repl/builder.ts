@@ -12,11 +12,12 @@ import {
 } from "../typesafe/questions.js";
 import type { KeyEvent } from "../tui/keys.js";
 import { isCtrl } from "../tui/keys.js";
+import { isWordLeft, isWordRight, wordLeft, wordRight } from "../tui/words.js";
+import type { Kind } from "./seeds.js";
+import { KINDS } from "./seeds.js";
 import { value } from "./session.js";
 
-export type Kind = "noul" | "choice" | "score";
-
-const KINDS: readonly Kind[] = ["noul", "choice", "score"];
+export type { Kind };
 
 export function kindAbout(kind: Kind): string {
   switch (kind) {
@@ -52,10 +53,20 @@ export type Outcome =
   | { kind: "cancel" }
   | { kind: "commit"; name: string; question: Question; state: string };
 
+/** How a builder starts: the type it opens on, and the names the session already holds. */
+export interface Opening {
+  /** The question type to start on — the one just built, so a second of the same shape is free. */
+  kind?: Kind;
+  /** Names already in the session; committing over one of them asks first. */
+  existing?: readonly string[];
+}
+
 export class Builder {
   state: string;
   name: string;
-  kind: Kind = "noul";
+  kind: Kind;
+  /** The names already in the session, so the form can say what it would overwrite. */
+  existing: readonly string[];
   instructions = "";
   yes = "";
   no = "";
@@ -67,14 +78,21 @@ export class Builder {
   focus: number;
   cursor: number;
   message: string | undefined;
+  /** Ctrl-S over a name the session already holds asks once before replacing it. */
+  #replaceArmed = false;
 
   /**
    * Opens on the first field that still needs an answer: the state if there is none, the name if
    * there is no name, otherwise the type.
+   *
+   * `opening.kind` is how a second question of the same type costs nothing to reach: after one is
+   * added the form reopens on the type just used, instead of falling back to a noul every time.
    */
-  constructor(state: string, name: string) {
+  constructor(state: string, name: string, opening: Opening = {}) {
     this.state = state;
     this.name = name;
+    this.kind = opening.kind ?? "noul";
+    this.existing = opening.existing ?? [];
     this.focus = name !== "" ? 2 : state.trim() === "" ? 0 : 1;
     this.cursor = this.focus === 0 ? [...state].length : [...name].length;
   }
@@ -178,6 +196,14 @@ export class Builder {
     }
 
     const onType = this.focused().kind === "type";
+    // Alt-←/→ cross a word, except on the type row, where ← → are how the type is switched.
+    if (!onType && (isWordLeft(event) || isWordRight(event))) {
+      const chars = [...this.text(this.focused())];
+      this.cursor = isWordLeft(event)
+        ? wordLeft(chars, this.cursor)
+        : wordRight(chars, this.cursor);
+      return { kind: "open" };
+    }
     switch (code.kind) {
       case "tab":
         this.#moveFocus(event.shift ? -1 : 1);
@@ -238,6 +264,7 @@ export class Builder {
   }
 
   #setKind(kind: Kind): void {
+    if (kind !== this.kind) this.#replaceArmed = false;
     this.kind = kind;
     this.focus = Math.min(this.focus, this.fields().length - 1);
   }
@@ -255,6 +282,7 @@ export class Builder {
   #insert(c: string): void {
     const field = this.focused();
     if (field.kind === "type") return;
+    if (field.kind === "name") this.#replaceArmed = false;
     const chars = [...this.text(field)];
     chars.splice(this.cursor, 0, c);
     this.#setText(field, chars.join(""));
@@ -264,6 +292,7 @@ export class Builder {
   #remove(index: number): void {
     const field = this.focused();
     if (field.kind === "type") return;
+    if (field.kind === "name") this.#replaceArmed = false;
     const chars = [...this.text(field)];
     if (index >= chars.length) return;
     chars.splice(index, 1);
@@ -360,6 +389,11 @@ export class Builder {
     const instructions = this.instructions.trim();
     if (instructions === "") {
       this.message = "Instructions are what the model actually reads.";
+      return { kind: "open" };
+    }
+    if (this.existing.includes(name) && !this.#replaceArmed) {
+      this.#replaceArmed = true;
+      this.message = `\`${name}\` is already a question — Ctrl-S again replaces it, or rename this one.`;
       return { kind: "open" };
     }
     let question: Question;

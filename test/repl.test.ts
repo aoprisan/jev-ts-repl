@@ -230,12 +230,49 @@ describe("generated code", () => {
   });
 });
 
+describe("the input line", () => {
+  it("crosses and deletes words with Alt-arrow", () => {
+    const a = app();
+    for (const c of ":noul is_urgent conveys urgency") {
+      a.handle({ kind: "key", event: char(c) });
+    }
+    expect(a.cursor).toBe(31);
+    a.handle({ kind: "key", event: key({ kind: "left" }, { alt: true }) });
+    expect(a.cursor).toBe(24);
+    a.handle({ kind: "key", event: key({ kind: "left" }, { ctrl: true }) });
+    expect(a.cursor, "Ctrl-← is the other spelling of the same key").toBe(16);
+    a.handle({ kind: "key", event: char("f", { alt: true }) });
+    expect(a.cursor).toBe(23);
+    a.handle({ kind: "key", event: key({ kind: "backspace" }, { alt: true }) });
+    expect(a.input).toBe(":noul is_urgent  urgency");
+  });
+});
+
 describe("builder mode", () => {
   const press = (b: Builder, event: Parameters<Builder["key"]>[0]): void => {
     b.key(event);
   };
   const typeInto = (b: Builder, text: string): void => {
     for (const c of text) press(b, char(c));
+  };
+
+  /** Fill the app's open builder in as a two-option choice and add it. */
+  const buildChoice = (a: App, name: string, pickChoice = false): void => {
+    const send = (event: Parameters<Builder["key"]>[0]): void => {
+      a.handle({ kind: "key", event });
+    };
+    if (!a.builder) throw new Error("the builder is not open");
+    for (const c of name) send(char(c));
+    send(key({ kind: "tab" })); // type
+    if (pickChoice) send(char("c"));
+    send(key({ kind: "tab" })); // instructions
+    for (const c of "Which team") send(char(c));
+    send(key({ kind: "tab" }));
+    for (const c of "billing") send(char(c));
+    send(key({ kind: "tab" }));
+    send(key({ kind: "tab" }));
+    for (const c of "technical") send(char(c));
+    send(ctrl("s"));
   };
 
   it("produces the same question as the command", () => {
@@ -279,6 +316,74 @@ describe("builder mode", () => {
     typeInto(b, "How warm the reply is");
     expect(b.key(ctrl("s")).kind).toBe("open");
     expect(b.message).toContain("two ordered levels");
+  });
+
+  it("keeps the type for the next question of the same shape", () => {
+    const a = app();
+    a.exec(":state A ticket");
+    a.handle({ kind: "key", event: ctrl("b") });
+    expect(a.builder?.kind, "a fresh builder opens on a noul").toBe("noul");
+
+    buildChoice(a, "department", true);
+    expect(a.session.questions.map(([name]) => name)).toEqual(["department"]);
+    // The form stays open on `choice`, so a second choice costs no keystrokes.
+    expect(a.builder?.kind).toBe("choice");
+    expect(a.builder?.existing).toEqual(["department"]);
+    expect(transcript(a)).toContain("type still `choice`");
+
+    buildChoice(a, "owner");
+    expect(a.session.questions.map(([name, q]) => `${name}:${q.kind}`)).toEqual([
+      "department:choice",
+      "owner:choice",
+    ]);
+  });
+
+  it("asks before a new question replaces one of the same name", () => {
+    const b = new Builder("A ticket", "", { kind: "choice", existing: ["department"] });
+    expect(b.kind, "the type it opens on is the one just used").toBe("choice");
+    typeInto(b, "department");
+    press(b, key({ kind: "tab" })); // type
+    press(b, key({ kind: "tab" })); // instructions
+    typeInto(b, "Which team");
+    press(b, key({ kind: "tab" }));
+    typeInto(b, "billing");
+    press(b, key({ kind: "tab" }));
+    press(b, key({ kind: "tab" }));
+    typeInto(b, "technical");
+
+    expect(b.key(ctrl("s")).kind).toBe("open");
+    expect(b.message).toContain("already a question");
+    // Saying it again means it: the session's `insert` does the replacing.
+    expect(b.key(ctrl("s")).kind).toBe("commit");
+
+    // Renaming disarms the warning, so the next one is added rather than replaced.
+    const c = new Builder("A ticket", "", { kind: "noul", existing: ["is_urgent"] });
+    typeInto(c, "is_urgent");
+    press(c, key({ kind: "tab" }));
+    press(c, key({ kind: "tab" }));
+    typeInto(c, "Conveys urgency");
+    expect(c.key(ctrl("s")).kind).toBe("open");
+    press(c, key({ kind: "up" })); // back to the name
+    press(c, key({ kind: "up" }));
+    typeInto(c, "_too");
+    const outcome = c.key(ctrl("s"));
+    expect(outcome.kind === "commit" && outcome.name).toBe("is_urgent_too");
+  });
+
+  it("crosses a word with Alt-arrow", () => {
+    const b = new Builder("the payout failed again", "");
+    expect(b.focused().kind).toBe("name");
+    press(b, key({ kind: "up" })); // onto the state field, cursor at its end
+    expect(b.cursor).toBe(23);
+    press(b, key({ kind: "left" }, { alt: true }));
+    expect(b.cursor).toBe(18);
+    press(b, char("f", { alt: true }));
+    expect(b.cursor).toBe(23);
+    // The type row keeps ← → for switching the type.
+    const typed = new Builder("", "tone");
+    expect(typed.focused().kind).toBe("type");
+    press(typed, key({ kind: "left" }, { alt: true }));
+    expect(typed.kind).toBe("score");
   });
 
   it("adds and drops rows", () => {

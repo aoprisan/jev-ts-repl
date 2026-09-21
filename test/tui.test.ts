@@ -3,8 +3,15 @@
 import { describe, expect, it } from "vitest";
 
 import { Buffer } from "../src/tui/buffer.js";
-import { decodeOne, KeyDecoder } from "../src/tui/keys.js";
+import { char, decodeOne, key, KeyDecoder } from "../src/tui/keys.js";
 import type { KeyEvent } from "../src/tui/keys.js";
+import {
+  isDeleteWordLeft,
+  isWordLeft,
+  isWordRight,
+  wordLeft,
+  wordRight,
+} from "../src/tui/words.js";
 import { horizontal, length, min, percentage, solve, vertical } from "../src/tui/layout.js";
 import { blankLine, line, sgr, span } from "../src/tui/style.js";
 
@@ -48,6 +55,33 @@ describe("key decoding", () => {
     expect(decode(`${ESC}b`)[0]).toMatchObject({ code: { kind: "char", char: "b" }, alt: true });
   });
 
+  it("reads Alt-arrow however the terminal spells it", () => {
+    // Meta rather than Alt: the same keypress, a different modifier bit.
+    expect(decode(`${ESC}[1;9A`)[0]).toMatchObject({ code: { kind: "up" }, alt: true });
+    expect(decode(`${ESC}[1;13D`)[0]).toMatchObject({
+      code: { kind: "left" },
+      alt: true,
+      ctrl: true,
+    });
+    // Alt as an Esc prefix on a whole arrow sequence.
+    expect(decode(`${ESC}${ESC}[B`)[0]).toMatchObject({ code: { kind: "down" }, alt: true });
+    // SS3, with the modifier alone and as a CSI-style pair.
+    expect(decode(`${ESC}O3D`)[0]).toMatchObject({ code: { kind: "left" }, alt: true });
+    expect(decode(`${ESC}O1;3C`)[0]).toMatchObject({ code: { kind: "right" }, alt: true });
+  });
+
+  it("waits for the arrow behind a doubled Esc", () => {
+    const decoder = new KeyDecoder();
+    expect(decoder.push(`${ESC}${ESC}`)).toEqual([]);
+    expect(decoder.pending).toBe(true);
+    expect(decoder.push("[A")[0]).toMatchObject({ code: { kind: "up" }, alt: true });
+    expect(decoder.pending).toBe(false);
+    // Nothing follows: it was Alt-Esc after all.
+    const lone = new KeyDecoder();
+    expect(lone.push(`${ESC}${ESC}`)).toEqual([]);
+    expect(lone.flush()[0]).toMatchObject({ code: { kind: "esc" }, alt: true });
+  });
+
   it("holds a lone Esc until it is clear no sequence follows", () => {
     const decoder = new KeyDecoder();
     expect(decoder.push(ESC)).toEqual([]);
@@ -64,9 +98,44 @@ describe("key decoding", () => {
 
   it("consumes exactly what it decoded", () => {
     expect(decodeOne(`${ESC}[1;5A`)?.consumed).toBe(6);
+    expect(decodeOne(`${ESC}${ESC}[1;5A`)?.consumed).toBe(7);
+    // A half-arrived sequence consumes nothing until it is clear no more is coming; then the
+    // doubled Esc is the Alt-Esc it turned out to be.
+    expect(decodeOne(`${ESC}${ESC}`)).toBeUndefined();
+    expect(decodeOne(`${ESC}${ESC}`, true)?.consumed).toBe(2);
     expect(decodeOne("x")?.consumed).toBe(1);
     // An astral character is one key, two UTF-16 units.
     expect(decodeOne("\u{1f600}")).toMatchObject({ consumed: 2 });
+  });
+});
+
+describe("word motion", () => {
+  const chars = [..."  the payout failed"];
+
+  it("crosses one word at a time", () => {
+    expect(wordLeft(chars, chars.length)).toBe(13);
+    expect(wordLeft(chars, 13)).toBe(6);
+    expect(wordLeft(chars, 6)).toBe(2);
+    expect(wordLeft(chars, 2)).toBe(0);
+    expect(wordLeft(chars, 0)).toBe(0);
+
+    expect(wordRight(chars, 0)).toBe(5);
+    expect(wordRight(chars, 5)).toBe(12);
+    expect(wordRight(chars, 12)).toBe(chars.length);
+    expect(wordRight(chars, chars.length)).toBe(chars.length);
+  });
+
+  it("answers to every spelling of Alt-arrow", () => {
+    expect(isWordLeft(key({ kind: "left" }, { alt: true }))).toBe(true);
+    expect(isWordLeft(key({ kind: "left" }, { ctrl: true }))).toBe(true);
+    expect(isWordLeft(char("b", { alt: true }))).toBe(true);
+    expect(isWordRight(key({ kind: "right" }, { alt: true }))).toBe(true);
+    expect(isWordRight(char("f", { alt: true }))).toBe(true);
+    expect(isDeleteWordLeft(key({ kind: "backspace" }, { alt: true }))).toBe(true);
+
+    expect(isWordLeft(key({ kind: "left" }))).toBe(false);
+    expect(isWordRight(char("f"))).toBe(false);
+    expect(isDeleteWordLeft(key({ kind: "backspace" }))).toBe(false);
   });
 });
 

@@ -39,13 +39,28 @@ export function isCtrl(event: KeyEvent, c: string): boolean {
 
 const ESC = "\u001b";
 
-/** `1;5A`-style parameters: the trailing number carries the modifiers. */
+/**
+ * `1;5A`-style parameters: the trailing number carries the modifiers.
+ *
+ * Bit 2 is Alt and bit 8 is Meta, and terminals disagree about which one Alt-Up sends — xterm
+ * says `1;3A`, others say `1;9A` for the same keypress. Both mean Alt here.
+ */
 function modifiers(params: string): Partial<Omit<KeyEvent, "code">> {
   const parts = params.split(";");
   const raw = Number(parts[1] ?? "1");
   if (!Number.isFinite(raw) || raw < 1) return {};
   const bits = raw - 1;
-  return { shift: (bits & 1) !== 0, alt: (bits & 2) !== 0, ctrl: (bits & 4) !== 0 };
+  return {
+    shift: (bits & 1) !== 0,
+    alt: (bits & 2) !== 0 || (bits & 8) !== 0,
+    ctrl: (bits & 4) !== 0,
+  };
+}
+
+/** SS3 parameters are the modifier alone (`ESC O 3 A`) or the CSI pair (`ESC O 1;3 A`). */
+function ss3Modifiers(params: string): Partial<Omit<KeyEvent, "code">> {
+  if (params === "") return {};
+  return modifiers(params.includes(";") ? params : `1;${params}`);
 }
 
 const FINAL_CODES: Record<string, KeyCode> = {
@@ -71,15 +86,19 @@ const TILDE_CODES: Record<string, KeyCode> = {
 /**
  * Decode one key from the front of `input`.
  *
- * Returns the event and how many characters it consumed, or `undefined` when the input so far is
- * the start of a longer escape sequence and the rest has not arrived yet.
+ * Returns the event and how many characters it consumed, or `undefined` when the input so far
+ * could be the start of a longer escape sequence and the rest has not arrived yet. Pass `final`
+ * when no more bytes are coming, and a half-finished sequence is read as the Esc it starts with.
  */
-export function decodeOne(input: string): { event: KeyEvent; consumed: number } | undefined {
+export function decodeOne(
+  input: string,
+  final = false,
+): { event: KeyEvent; consumed: number } | undefined {
   if (input.length === 0) return undefined;
   const first = input[0] as string;
 
   if (first === ESC) {
-    if (input.length === 1) return { event: key({ kind: "esc" }), consumed: 1 };
+    if (input.length === 1) return final ? { event: key({ kind: "esc" }), consumed: 1 } : undefined;
     const second = input[1] as string;
     // CSI: ESC [ params final
     if (second === "[") {
@@ -90,30 +109,38 @@ export function decodeOne(input: string): { event: KeyEvent; consumed: number } 
         i += 1;
       }
       if (i >= input.length) return undefined;
-      const final = input[i] as string;
+      const finalByte = input[i] as string;
       const consumed = i + 1;
-      if (final === "~") {
+      if (finalByte === "~") {
         const code = TILDE_CODES[params.split(";")[0] ?? ""];
         if (!code) return { event: key({ kind: "esc" }), consumed };
         return { event: key(code, modifiers(params)), consumed };
       }
-      const code = FINAL_CODES[final];
+      const code = FINAL_CODES[finalByte];
       if (code) {
-        const mods = final === "Z" ? { shift: true } : modifiers(params);
+        const mods = finalByte === "Z" ? { shift: true } : modifiers(params);
         return { event: key(code, mods), consumed };
       }
       // An escape sequence this REPL has no use for (mouse, focus, bracketed paste markers).
       return { event: key({ kind: "esc" }), consumed };
     }
-    // SS3: ESC O final
+    // SS3: ESC O params final — the application keypad, which may carry modifiers too.
     if (second === "O") {
-      if (input.length < 3) return undefined;
-      const code = FINAL_CODES[input[2] as string];
-      return { event: key(code ?? { kind: "esc" }), consumed: 3 };
+      let i = 2;
+      let params = "";
+      while (i < input.length && /[0-9;]/.test(input[i] as string)) {
+        params += input[i];
+        i += 1;
+      }
+      if (i >= input.length) return undefined;
+      const code = FINAL_CODES[input[i] as string];
+      const consumed = i + 1;
+      if (!code) return { event: key({ kind: "esc" }), consumed };
+      return { event: key(code, ss3Modifiers(params)), consumed };
     }
-    // ESC <key> is Alt-<key>.
-    const rest = decodeOne(input.slice(1));
-    if (!rest) return { event: key({ kind: "esc" }), consumed: 1 };
+    // ESC <key> is Alt-<key>, which is how Alt-Up reaches a terminal that sends Esc for Alt.
+    const rest = decodeOne(input.slice(1), final);
+    if (!rest) return final ? { event: key({ kind: "esc" }), consumed: 1 } : undefined;
     return {
       event: { ...rest.event, alt: true },
       consumed: rest.consumed + 1,
@@ -143,8 +170,8 @@ export class KeyDecoder {
     this.#pending += input;
     const events: KeyEvent[] = [];
     while (this.#pending.length > 0) {
-      // A lone Esc may be the start of a sequence whose rest has not arrived; `flush` decides.
-      if (this.#pending === ESC) break;
+      // An unfinished escape sequence — a lone Esc, `Esc Esc` before its arrow, `Esc [` before
+      // its final byte — is held until the rest arrives; `flush` decides when none does.
       const next = decodeOne(this.#pending);
       if (!next) break;
       events.push(next.event);
@@ -162,7 +189,7 @@ export class KeyDecoder {
   flush(): KeyEvent[] {
     const events: KeyEvent[] = [];
     while (this.#pending.length > 0) {
-      const next = decodeOne(this.#pending);
+      const next = decodeOne(this.#pending, true);
       if (!next) {
         this.#pending = "";
         break;

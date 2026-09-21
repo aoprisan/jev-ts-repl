@@ -7,7 +7,14 @@
  * goes through the same `Client`. This file is a view.
  */
 
-import type { Answer, ChoiceOption, Json, Question, Session as SessionType } from "jev-repl/core";
+import type {
+  Answer,
+  ChoiceOption,
+  Json,
+  Kind,
+  Question,
+  Session as SessionType,
+} from "jev-repl/core";
 import {
   choice,
   Client,
@@ -23,6 +30,7 @@ import {
   noul,
   PRESETS,
   score,
+  seed,
   Session,
   sketch,
 } from "jev-repl/core";
@@ -466,18 +474,29 @@ function card(session: SessionType, name: string, question: Question, index: num
   ]);
 }
 
-function addQuestion(kind: "noul" | "choice" | "score"): void {
+/**
+ * The first `question_N` the page is not already using.
+ *
+ * Counting the questions is not enough: after one is removed the count points back at a name that
+ * is still on the page, and adding another would replace it instead of asking a second question.
+ */
+function freeName(session: SessionType): string {
+  const taken = new Set(session.questions.map(([name]) => name));
+  for (let i = 1; ; i += 1) {
+    const name = `question_${i}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
+function addQuestion(kind: Kind): void {
   const page = parsed();
   if (!page.ok()) {
     say("fix the page's problems first");
     return;
   }
   const session = page.toSession();
-  const name = `question_${session.questions.length + 1}`;
-  if (kind === "noul") session.insert(name, noul("What this asks"));
-  else if (kind === "choice")
-    session.insert(name, choice("What this asks", [["first", null] as ChoiceOption]));
-  else session.insert(name, score("What this asks", ["low", "high"]));
+  const name = freeName(session);
+  session.insert(name, seed(kind));
   commit(session);
 }
 
@@ -880,9 +899,7 @@ function wire(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-add]")) {
-    button.addEventListener("click", () =>
-      addQuestion(button.dataset["add"] as "noul" | "choice" | "score"),
-    );
+    button.addEventListener("click", () => addQuestion(button.dataset["add"] as Kind));
   }
 
   el<HTMLButtonElement>("ask").addEventListener("click", () => void ask());

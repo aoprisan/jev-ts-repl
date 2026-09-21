@@ -10,6 +10,7 @@ import { questionToJson } from "../typesafe/questions.js";
 import type { Answer, ListModelsResponse, SystemOneResponse } from "../typesafe/responses.js";
 import type { KeyEvent } from "../tui/keys.js";
 import { isCtrl } from "../tui/keys.js";
+import { isDeleteWordLeft, isWordLeft, isWordRight, wordLeft, wordRight } from "../tui/words.js";
 import type { Line } from "../tui/style.js";
 import { blankLine, line, span } from "../tui/style.js";
 import { Builder } from "./builder.js";
@@ -318,7 +319,15 @@ export class App {
       this.cursor = 0;
       return;
     }
-    if (isCtrl(event, "w")) return this.#deleteWord();
+    if (isCtrl(event, "w") || isDeleteWordLeft(event)) return this.#deleteWord();
+    if (isWordLeft(event)) {
+      this.cursor = wordLeft([...this.input], this.cursor);
+      return;
+    }
+    if (isWordRight(event)) {
+      this.cursor = wordRight([...this.input], this.cursor);
+      return;
+    }
 
     const { code } = event;
     switch (code.kind) {
@@ -808,14 +817,18 @@ export class App {
 
   /** Builder mode: the same question, built in a form, with the JSON shown as it is typed. */
   #openBuilder(name: string): void {
-    const state =
-      typeof this.session.state === "string"
-        ? this.session.state
-        : this.session.state === null
-          ? ""
-          : compact(this.session.state);
-    this.builder = new Builder(state, name.trim());
+    this.builder = new Builder(this.#stateText(), name.trim(), { existing: this.#names() });
     this.#note("builder mode — Tab moves, Ctrl-S adds the question, Esc closes.");
+  }
+
+  /** The state as the builder's one-line field holds it. */
+  #stateText(): string {
+    if (typeof this.session.state === "string") return this.session.state;
+    return this.session.state === null ? "" : compact(this.session.state);
+  }
+
+  #names(): string[] {
+    return this.session.questions.map(([name]) => name);
   }
 
   #builderKey(event: KeyEvent): void {
@@ -835,8 +848,13 @@ export class App {
     this.#push(line([span("› ", { fg: ACCENT }), span(command)]));
     this.#note("(what builder mode just built — the one-line form does the same thing)");
     this.#add({ ok: true, value: [name, question] });
-    // Stay in the form so the next question is one keystroke away.
-    this.builder = new Builder(state, "");
+    // Stay in the form, on the same type: a rubric is usually several questions of one shape, and
+    // re-picking `choice` for every one of them is the part that made the form slower than typing.
+    const kind = builder.kind;
+    this.builder = new Builder(state, "", { kind, existing: this.#names() });
+    this.#note(
+      `still in the builder, type still \`${kind}\` — name the next one, or Esc to close.`,
+    );
   }
 
   /** Sketch mode: the whole session on one page, parsed as it is typed. */

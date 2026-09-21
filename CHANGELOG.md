@@ -3,6 +3,40 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## 0.6.0
+
+### Added
+
+- **Alt-arrow, in every terminal that sends one.** Alt-← and Alt-→ cross a word on the input line,
+  in the sketch editor and in every builder field, and Alt-Backspace deletes the word behind the
+  cursor. Terminals disagree about how Alt is spelled, so all of the spellings are read now: the
+  modified arrow (`Esc [ 1;3A`), the Meta bit some terminals use for the same keypress
+  (`Esc [ 1;9A`), the doubled Esc a terminal sends when Alt means "prefix with Esc", a modified
+  SS3 arrow (`Esc O 3 D`), and the readline bindings `Alt-b` / `Alt-f`. Ctrl-←/→ works too.
+- **Several questions of the same type, without the extra keystrokes.** After Ctrl-S adds a
+  question, builder mode stays open on the type just used instead of falling back to a noul, and
+  the form lists what the session already holds, so a rubric of three nouls or two choices is
+  named and typed rather than re-selected each time.
+- New `isWordLeft`, `isWordRight`, `isDeleteWordLeft`, `wordLeft` and `wordRight` on the exports,
+  alongside the key decoder — the bindings and the motion a text field needs to answer Alt-arrow.
+- New `seed` and `KINDS` on both exports: a blank question of each kind, filled in enough to be a
+  page that parses. `Kind` moves to the same module and is re-exported where it was.
+
+### Fixed
+
+- **A key held back is no longer swallowed.** `Esc Esc` arriving before the rest of its arrow was
+  decoded as Alt-Esc and the arrow behind it was lost; a half-arrived sequence now waits for its
+  remaining bytes, and is read as the Esc it starts with only when nothing follows.
+- **Builder mode asks before replacing.** Ctrl-S on a name the session already holds warns once
+  and adds the question only when it is confirmed, so a second question of the same shape does not
+  quietly overwrite the first.
+- **The web build tab names new questions apart.** Adding a question after removing one picked a
+  name that was still in use and replaced that question instead of adding one.
+- **"+ choice" no longer breaks the build tab.** It seeded a choice with a single option, and one
+  option is not a choice: the page the tab had just written would not parse, so the cards vanished
+  behind "The page has problems" and every further add was refused. Seeds now round-trip, which a
+  test holds them to.
+
 ## 0.5.0
 
 ### Added

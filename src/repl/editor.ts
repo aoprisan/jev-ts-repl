@@ -5,6 +5,7 @@
 
 import type { KeyEvent } from "../tui/keys.js";
 import { isCtrl } from "../tui/keys.js";
+import { isDeleteWordLeft, isWordLeft, isWordRight, wordLeft, wordRight } from "../tui/words.js";
 import type { ParsedSketch } from "./sketch.js";
 import { parse } from "./sketch.js";
 
@@ -90,6 +91,19 @@ export class Editor {
     }
     if (isCtrl(event, "e")) {
       this.col = this.#len();
+      return "open";
+    }
+    // Alt-←/→ cross a word; Alt-↑/↓ move the whole line, so the arrows below check `alt` too.
+    if (isWordLeft(event)) {
+      this.#wordLeft();
+      return "open";
+    }
+    if (isWordRight(event)) {
+      this.#wordRight();
+      return "open";
+    }
+    if (isDeleteWordLeft(event)) {
+      this.#deleteWordLeft();
       return "open";
     }
 
@@ -235,6 +249,45 @@ export class Editor {
     }
     this.lines.splice(this.row, 0, this.#cut);
     this.row += 1;
+    this.dirty = true;
+  }
+
+  #chars(): string[] {
+    return [...(this.lines[this.row] ?? "")];
+  }
+
+  /** Alt-←: to the start of the word before the cursor, or onto the end of the line above. */
+  #wordLeft(): void {
+    if (this.col === 0) {
+      if (this.row === 0) return;
+      this.row -= 1;
+      this.col = this.#len();
+      return;
+    }
+    this.col = wordLeft(this.#chars(), this.col);
+  }
+
+  /** Alt-→: past the end of the word after the cursor, or onto the start of the line below. */
+  #wordRight(): void {
+    if (this.col >= this.#len()) {
+      if (this.row + 1 >= this.lines.length) return;
+      this.row += 1;
+      this.col = 0;
+      return;
+    }
+    this.col = wordRight(this.#chars(), this.col);
+  }
+
+  /** Alt-Backspace: take the word before the cursor out. */
+  #deleteWordLeft(): void {
+    if (this.col === 0) {
+      this.#backspace();
+      return;
+    }
+    const chars = this.#chars();
+    const at = wordLeft(chars, this.col);
+    this.lines[this.row] = [...chars.slice(0, at), ...chars.slice(this.col)].join("");
+    this.col = at;
     this.dirty = true;
   }
 

@@ -247,6 +247,28 @@ describe("the editor", () => {
     expect(ed.lines).toEqual(["abc"]);
   });
 
+  it("crosses and deletes words with Alt-arrow", () => {
+    const ed = new Editor("is_urgent? conveys urgency\n---");
+    press(ed, { kind: "end" });
+    ed.key(key({ kind: "left" }, { alt: true }));
+    expect(ed.col, "onto the start of `urgency`").toBe(19);
+    ed.key(char("b", { alt: true }));
+    expect(ed.col, "Alt-b is the same key in a terminal that sends it").toBe(11);
+    ed.key(key({ kind: "right" }, { alt: true }));
+    expect(ed.col).toBe(18);
+    // At the edges it steps to the neighbouring line, the way a plain arrow does.
+    ed.key(key({ kind: "left" }, { alt: true }));
+    ed.key(key({ kind: "left" }, { alt: true }));
+    ed.key(key({ kind: "left" }, { alt: true }));
+    expect([ed.row, ed.col]).toEqual([0, 0]);
+    ed.key(char("f", { alt: true }));
+    expect(ed.col).toBe(10);
+
+    press(ed, { kind: "end" });
+    ed.key(key({ kind: "backspace" }, { alt: true }));
+    expect(ed.lines[0]).toBe("is_urgent? conveys ");
+  });
+
   it("asks before discarding edits, and cycles the preview", () => {
     const clean = new Editor("\n---\n");
     expect(press(clean, { kind: "esc" })).toBe("cancel");

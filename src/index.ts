@@ -47,6 +47,7 @@ export { SKILL_FILE, SKILL_MD, SKILL_NAME } from "./agent/skill.js";
 export { App, COMMANDS } from "./repl/app.js";
 export type { Msg } from "./repl/app.js";
 export { Builder } from "./repl/builder.js";
+export { KINDS, seed } from "./repl/seeds.js";
 export type { Field, Kind, Outcome as BuilderOutcome } from "./repl/builder.js";
 export * as codegen from "./repl/codegen.js";
 export * as cost from "./repl/cost.js";
@@ -87,6 +88,7 @@ export type { KeyCode, KeyEvent } from "./tui/keys.js";
 export { blankLine, line, lineText, linesText, patchStyle, span, lineWidth } from "./tui/style.js";
 export type { Color, Line, Span, Style } from "./tui/style.js";
 export { Terminal } from "./tui/terminal.js";
+export { isDeleteWordLeft, isWordLeft, isWordRight, wordLeft, wordRight } from "./tui/words.js";
 
 // The CLI entry point, for embedding `jev` in another binary.
 export { main } from "./cli.js";
