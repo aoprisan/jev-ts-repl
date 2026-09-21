@@ -87,6 +87,7 @@ export type { KeyCode, KeyEvent } from "./tui/keys.js";
 export { blankLine, line, lineText, linesText, patchStyle, span, lineWidth } from "./tui/style.js";
 export type { Color, Line, Span, Style } from "./tui/style.js";
 export { Terminal } from "./tui/terminal.js";
+export { isDeleteWordLeft, isWordLeft, isWordRight, wordLeft, wordRight } from "./tui/words.js";
 
 // The CLI entry point, for embedding `jev` in another binary.
 export { main } from "./cli.js";

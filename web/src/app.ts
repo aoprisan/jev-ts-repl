@@ -466,6 +466,20 @@ function card(session: SessionType, name: string, question: Question, index: num
   ]);
 }
 
+/**
+ * The first `question_N` the page is not already using.
+ *
+ * Counting the questions is not enough: after one is removed the count points back at a name that
+ * is still on the page, and adding another would replace it instead of asking a second question.
+ */
+function freeName(session: SessionType): string {
+  const taken = new Set(session.questions.map(([name]) => name));
+  for (let i = 1; ; i += 1) {
+    const name = `question_${i}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
 function addQuestion(kind: "noul" | "choice" | "score"): void {
   const page = parsed();
   if (!page.ok()) {
@@ -473,7 +487,7 @@ function addQuestion(kind: "noul" | "choice" | "score"): void {
     return;
   }
   const session = page.toSession();
-  const name = `question_${session.questions.length + 1}`;
+  const name = freeName(session);
   if (kind === "noul") session.insert(name, noul("What this asks"));
   else if (kind === "choice")
     session.insert(name, choice("What this asks", [["first", null] as ChoiceOption]));

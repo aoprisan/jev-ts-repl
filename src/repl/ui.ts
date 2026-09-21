@@ -200,7 +200,9 @@ function builderView(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
   const inner = buffer.block(popup, {
     borderStyle: { fg: ACCENT },
     title: line([span(" build a question ", { fg: ACCENT, bold: true })]),
-    titleBottom: line([dim(" Tab move · ^O add row · ^X drop row · ^S add question · Esc close ")]),
+    titleBottom: line([
+      dim(" Tab move · Alt-←→ word · ^O add row · ^X drop row · ^S add question · Esc close "),
+    ]),
   });
 
   const [formArea, gutter, previewArea] = horizontal(inner, [percentage(55), length(2), min(20)]);
@@ -260,6 +262,9 @@ function form(
   row("state", { kind: "state" }, "the text being judged");
   lines.push(blankLine());
   row("name", { kind: "name" }, "answers come back under this");
+  if (b.existing.length > 0) {
+    lines.push(line([span(" ".repeat(LABEL)), dim(`already asked: ${b.existing.join(", ")}`)]));
+  }
 
   // The type row is a cycler, not a text field.
   const kindFocused = focused.kind === "type";
@@ -327,7 +332,7 @@ function sketchView(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
     title: line([span(" sketch · the request as one page ", { fg: ACCENT, bold: true })]),
     titleBottom: line([
       dim(
-        " ^S apply · ^G apply & send · ^P preview · ^X/^U cut/paste line · Alt-↑↓ move line · Esc close ",
+        " ^S apply · ^G apply & send · ^P preview · ^X/^U cut/paste line · Alt-↑↓ move line · Alt-←→ word · Esc close ",
       ),
     ]),
   });
