@@ -28,6 +28,7 @@ import type { Command } from "./repl/headless.js";
 import * as headless from "./repl/headless.js";
 import { errorLines } from "./repl/format.js";
 import type { Session } from "./repl/session.js";
+import { parseTurn } from "./repl/session.js";
 import { render } from "./repl/ui.js";
 import { Terminal } from "./tui/terminal.js";
 import { linesText } from "./tui/style.js";
@@ -53,6 +54,7 @@ The file is a .jev sketch page or a request body; \`-\`, or no file at all, read
 
 Options
   --state <text>         set the state, or replace the one on the page
+  --turn <who>: <text>   append a turn, making the state a conversation; repeatable
   --model <name>         the model to ask
   --threshold <0-1>      what counts as a yes for a noul (default 0.5)
   --price <in>/<out>     dollars per million tokens, input then output
@@ -77,6 +79,8 @@ command line did not parse.
 interface Options {
   file: string;
   state?: string;
+  /** Turns appended to the state, in the order they were given. */
+  turns: string[];
   model?: string;
   threshold: number;
   rates?: cost.Rates;
@@ -96,6 +100,7 @@ class UsageError extends Error {}
 
 const FLAGS_WITH_VALUES = [
   "--state",
+  "--turn",
   "--model",
   "--threshold",
   "--price",
@@ -114,6 +119,7 @@ const FLAGS_WITH_VALUES = [
 function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options {
   const options: Options = {
     file: "-",
+    turns: [],
     threshold: 0.5,
     mock: false,
     json: false,
@@ -135,6 +141,9 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
     switch (name) {
       case "--state":
         options.state = valueOf();
+        break;
+      case "--turn":
+        options.turns.push(valueOf());
         break;
       case "--model":
         options.model = valueOf();
@@ -217,11 +226,15 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
  * The flags `eval` reads differently from the other commands.
  *
  * `--state` is the interesting one: a page's state is what the cases replace, so passing one would
- * quietly judge the same text forty times.
+ * quietly judge the same text forty times. `--turn` is the same thing said a turn at a time — a
+ * case that is a conversation carries its turns in its own `state`.
  */
 function checkEvalOptions(options: Options): void {
   if (options.state !== undefined) {
     throw new UsageError("--state does not apply to eval: the cases carry the states.");
+  }
+  if (options.turns.length > 0) {
+    throw new UsageError("--turn does not apply to eval: a case's own state carries its turns.");
   }
   if (options.cases === undefined) {
     throw new UsageError("--cases <file> is required: jev eval page.jev --cases cases.jsonl");
@@ -434,6 +447,18 @@ async function runCommand(
   }
   const session = loaded.value;
   if (options.state !== undefined) session.state = options.state;
+  for (const text of options.turns) {
+    const turn = parseTurn(text);
+    if (!turn.ok) {
+      err(`jev ${command}: --turn ${turn.error}\n`);
+      return 2;
+    }
+    const added = session.addTurn(turn.value);
+    if (!added.ok) {
+      err(`jev ${command}: --turn ${added.error}\n`);
+      return 2;
+    }
+  }
   if (options.model !== undefined) session.model = options.model;
 
   // A key makes the model name the client's default; without one the published default stands.
@@ -543,8 +568,8 @@ async function runMcp(
     if (options.file !== "-") {
       throw new UsageError("jev mcp takes no file: the pages arrive in the tool calls.");
     }
-    if (options.state !== undefined || options.cases !== undefined) {
-      throw new UsageError("--state and --cases belong to a tool call, not to the server.");
+    if (options.state !== undefined || options.turns.length > 0 || options.cases !== undefined) {
+      throw new UsageError("--state, --turn and --cases belong to a tool call, not to the server.");
     }
   } catch (e) {
     err(`jev mcp: ${e instanceof Error ? e.message : String(e)}\n`);

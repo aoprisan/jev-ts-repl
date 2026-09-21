@@ -22,6 +22,57 @@ export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 const ok = <T>(value: T): Parsed<T> => ({ ok: true, value });
 const err = <T>(error: string): Parsed<T> => ({ ok: false, error });
 
+/**
+ * One turn of a conversation held as the state: who spoke, and what they said.
+ *
+ * A conversation is not a new field on the wire — it is the `state`, shaped as an array. The
+ * questions stay fixed and the state grows, which is the whole point: the same rubric, re-read
+ * after every reply, so a noul can be watched moving rather than sampled once.
+ */
+export interface Turn {
+  /** The speaker, when the line names one. */
+  readonly who?: string;
+  /** What was said. */
+  readonly said: string;
+}
+
+/** Keys a turn's speaker may arrive under, so a transcript from elsewhere still reads as one. */
+const WHO_KEYS = ["who", "role", "speaker", "from"] as const;
+/** Keys a turn's text may arrive under, for the same reason. */
+const SAID_KEYS = ["said", "text", "content", "message"] as const;
+
+/**
+ * Read a state as a conversation, or `undefined` when it is not one.
+ *
+ * Only an array whose every element carries some text counts, so a string state, a row of
+ * numbers or an object of fields is never mistaken for a thread and quietly reshaped. The key
+ * names are read loosely because a transcript pasted in from a chat API is still a transcript.
+ */
+export function turnsOf(state: Json): Turn[] | undefined {
+  if (!Array.isArray(state) || state.length === 0) return undefined;
+  const turns: Turn[] = [];
+  for (const item of state) {
+    if (!isObject(item)) return undefined;
+    const said = SAID_KEYS.map((k) => item[k]).find((v) => typeof v === "string");
+    if (typeof said !== "string") return undefined;
+    const who = WHO_KEYS.map((k) => item[k]).find((v) => typeof v === "string");
+    turns.push(typeof who === "string" && who !== "" ? { who, said } : { said });
+  }
+  return turns;
+}
+
+/** Turns as they go on the wire: `who` only when there is one, so nothing empty is paid for. */
+export function turnsToJson(turns: readonly Turn[]): Json {
+  return turns.map((t): JsonObject =>
+    t.who === undefined ? { said: t.said } : { who: t.who, said: t.said },
+  );
+}
+
+/** `customer: The payout failed again` — one turn on one line. */
+export function turnText(turn: Turn): string {
+  return turn.who === undefined ? turn.said : `${turn.who}: ${turn.said}`;
+}
+
 /** Everything the next `:ask` will send. */
 export class Session {
   /** The text or JSON the model reasons about. */
@@ -45,7 +96,51 @@ export class Session {
 
   /** One-line preview of the state for the side panel. */
   statePreview(): string {
+    const turns = this.turns();
+    if (turns !== undefined) {
+      const last = turns[turns.length - 1] as Turn;
+      return `${turns.length} turn${turns.length === 1 ? "" : "s"} · ${turnText(last)}`;
+    }
     return typeof this.state === "string" ? this.state : compact(this.state);
+  }
+
+  /** The state read as a conversation, or `undefined` when it is something else. */
+  turns(): Turn[] | undefined {
+    return turnsOf(this.state);
+  }
+
+  /**
+   * Append a turn to the state.
+   *
+   * An empty state starts a thread and a thread grows by one. A state that is plain text becomes
+   * the first turn, because that is how a session usually begins — one message, then the reply to
+   * it. Any other JSON is refused rather than reshaped: whatever it is, it is not a conversation,
+   * and guessing at one would lose it.
+   */
+  addTurn(turn: Turn): Parsed<Turn[]> {
+    const seed = this.turns() ?? this.#seedTurns();
+    if (seed === undefined) {
+      return err("The state is JSON that is not a conversation, so there is no thread to add to.");
+    }
+    const turns = [...seed, turn];
+    this.state = turnsToJson(turns);
+    return ok(turns);
+  }
+
+  /** Take the last turn back. The last one of all leaves the state empty again. */
+  dropTurn(): Turn | undefined {
+    const turns = this.turns();
+    const last = turns?.[turns.length - 1];
+    if (turns === undefined || last === undefined) return undefined;
+    const rest = turns.slice(0, -1);
+    this.state = rest.length === 0 ? "" : turnsToJson(rest);
+    return last;
+  }
+
+  /** What a thread starts from: nothing, or the text that was already there. */
+  #seedTurns(): Turn[] | undefined {
+    if (isEmptyValue(this.state)) return [];
+    return typeof this.state === "string" ? [{ said: this.state }] : undefined;
   }
 
   /** Add a question, or replace one of the same name in place. Returns whether it replaced one. */
@@ -178,6 +273,24 @@ export function parseRaw(args: string): Parsed<Entry> {
   } catch (e) {
     return err(`Not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * `who: what they said`, or just what they said.
+ *
+ * The speaker is the first word and only when that word ends in a colon, so a line typed without
+ * one keeps all of its words instead of donating the first to a speaker nobody named.
+ */
+export function parseTurn(args: string): Parsed<Turn> {
+  const text = args.trim();
+  const example = ":turn customer: The payout failed again";
+  if (text === "") return err(`A turn needs something said. Try: ${example}`);
+  const at = text.search(/\s/);
+  const head = at === -1 ? text : text.slice(0, at);
+  if (!head.endsWith(":") || head.length === 1) return ok({ said: text });
+  const said = at === -1 ? "" : text.slice(at + 1).trim();
+  if (said === "") return err(`Nothing said after ${JSON.stringify(head)}. Try: ${example}`);
+  return ok({ who: head.slice(0, -1), said });
 }
 
 function splitName(args: string, example: string): Parsed<[string, string]> {

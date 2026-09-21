@@ -3,6 +3,25 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **A state can be a conversation.** `:turn <who>: <text>` grows the state into a thread of turns
+  instead of replacing it, so the same rubric can be re-read after every reply rather than sampled
+  once — the questions stay fixed and only the state gets longer. `:turn list` shows the thread,
+  `:turn drop` takes the last one back, and text that was already the state becomes the first turn.
+  Nothing new goes on the wire: the `state` is an array of `{who, said}`, which is why a `.jev`
+  page can carry one and a `jev eval` case can score one. A transcript written with the keys a chat
+  API uses is read as turns too.
+- **`jev run --turn "<who>: <text>"`** appends a turn from the command line, and repeats, so a
+  thread can be driven from a script. It does not apply to `eval`, where each case carries its own
+  state.
+- **`:cost` prices the thread, not just the call.** A conversation is sent whole every time it is
+  asked about, so the table now counts the turns in the state and adds what a call per turn comes
+  to. New `thread` function and `Thread` type on both exports, alongside `Turn`, `turnsOf`,
+  `turnsToJson`, `turnText` and `parseTurn`.
+
 ## 0.4.0
 
 ### Added

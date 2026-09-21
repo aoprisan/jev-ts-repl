@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 import type { Json } from "../json.js";
-import { pretty } from "../json.js";
+import { compact, pretty } from "../json.js";
 import { Client } from "../typesafe/client.js";
 import { API_KEY_ENV } from "../typesafe/constants.js";
 import { questionToJson } from "../typesafe/questions.js";
@@ -28,6 +28,7 @@ import {
   questionLines,
   SCORE,
   styled,
+  turnLines,
   WARN,
 } from "./format.js";
 import * as highlight from "./highlight.js";
@@ -35,7 +36,16 @@ import { LESSONS } from "./lessons.js";
 import * as mock from "./mock.js";
 import * as presets from "./presets.js";
 import type { Entry, Parsed } from "./session.js";
-import { fromBody, parseChoice, parseNoul, parseRaw, parseScore, Session } from "./session.js";
+import {
+  fromBody,
+  parseChoice,
+  parseNoul,
+  parseRaw,
+  parseScore,
+  parseTurn,
+  Session,
+  turnText,
+} from "./session.js";
 import * as sketch from "./sketch.js";
 
 /** Everything that can move the app forward. */
@@ -51,6 +61,7 @@ export const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   [":try", "put the current lesson's command in the input line (Ctrl-T)"],
   [":preset", "load a ready-made session — :preset list"],
   [":state", "set the state — :state <text> | :state json {…} | :state clear"],
+  [":turn", "grow the state into a conversation — :turn <who>: <text> | :turn list | :turn drop"],
   [":noul", ":noul <name> <instructions> [| yes: …] [| no: …]"],
   [":choice", ":choice <name> <instructions> | label=desc | label=desc"],
   [":score", ":score <name> <instructions> | level | level | …"],
@@ -104,6 +115,10 @@ const CONCEPTS: ReadonlyArray<readonly [string, string]> = [
   [
     "confidence",
     "How concentrated the distribution is. Gate automation on it and send the rest to a human.",
+  ],
+  [
+    "conversation",
+    "A state that is a list of turns instead of one message. The questions stay fixed and the thread grows, so the same rubric can be re-read after every reply. `:turn` builds one.",
   ],
   [
     "names",
@@ -488,6 +503,9 @@ export class App {
       case ":s":
         this.#stateCmd(args);
         break;
+      case ":turn":
+        this.#turnCmd(args);
+        break;
       case ":noul":
         this.#add(parseNoul(args));
         break;
@@ -660,6 +678,10 @@ export class App {
 
   #stateCmd(args: string): void {
     if (args === "") {
+      if (this.session.turns() !== undefined) {
+        this.#showTurns();
+        return;
+      }
       this.#heading("state");
       if (this.session.stateIsEmpty()) {
         this.#note("empty — type any text (no colon) or `:state <text>` to set it.");
@@ -684,6 +706,70 @@ export class App {
       return;
     }
     this.#setState(args);
+  }
+
+  /**
+   * `:turn` — the state as a conversation.
+   *
+   * Nothing new goes on the wire: the state becomes a list of turns and grows by one each time,
+   * so the questions stay exactly as they were and Enter re-reads the whole thread. Watching a
+   * noul move across the turns is the thing this is for.
+   */
+  #turnCmd(args: string): void {
+    const trimmed = args.trim();
+    if (trimmed === "" || trimmed === "list") {
+      this.#showTurns();
+      return;
+    }
+    if (trimmed === "drop" || trimmed === "pop") {
+      const dropped = this.session.dropTurn();
+      if (dropped === undefined) {
+        this.#warn("no turns to drop — the state is not a conversation yet.");
+        return;
+      }
+      this.#note(`dropped ${turnText(dropped)}`);
+      if (this.session.stateIsEmpty()) this.#note("that was the last one; the state is empty.");
+      return;
+    }
+    const parsed = parseTurn(trimmed);
+    if (!parsed.ok) {
+      this.#bad(parsed.error);
+      return;
+    }
+    // Before it is added, so the note below can say what became of the text that was there.
+    const seeded = !this.session.stateIsEmpty() && this.session.turns() === undefined;
+    const added = this.session.addTurn(parsed.value);
+    if (!added.ok) {
+      this.#bad(added.error);
+      this.#note("`:state clear` starts one from nothing.");
+      return;
+    }
+    const turns = added.value;
+    if (seeded) this.#note("the state you had became the first turn.");
+    this.#extend(turnLines(turns.length - 1, parsed.value));
+    if (parsed.value.who === undefined) {
+      this.#note("nobody named — `:turn customer: …` attributes it.");
+    }
+    if (turns.length === 1) {
+      this.#note("add the reply with another :turn; Enter re-asks every question over the thread.");
+    }
+  }
+
+  #showTurns(): void {
+    const turns = this.session.turns();
+    if (turns === undefined) {
+      this.#heading("state");
+      if (this.session.stateIsEmpty()) {
+        this.#note("empty — `:turn customer: <text>` starts a conversation.");
+      } else {
+        this.#extend(highlight.json(pretty(this.session.state)));
+        this.#note("not a conversation — `:turn <who>: <text>` makes this text the first turn.");
+      }
+      return;
+    }
+    this.#heading(`conversation (${turns.length} turn${turns.length === 1 ? "" : "s"})`);
+    turns.forEach((turn, i) => this.#extend(turnLines(i, turn)));
+    this.#note("`:turn drop` takes the last one back; `:json` shows it as the state it is.");
   }
 
   #setState(value: Json): void {
@@ -727,7 +813,7 @@ export class App {
         ? this.session.state
         : this.session.state === null
           ? ""
-          : this.session.statePreview();
+          : compact(this.session.state);
     this.builder = new Builder(state, name.trim());
     this.#note("builder mode — Tab moves, Ctrl-S adds the question, Esc closes.");
   }
@@ -866,6 +952,7 @@ export class App {
         cost.estimate(this.session, this.modelName()),
         this.rates,
         ":cost 0.20/1.00 prices it: dollars per million tokens, input then output",
+        cost.thread(this.session, this.modelName()),
       ),
     );
     this.#note(

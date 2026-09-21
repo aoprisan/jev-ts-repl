@@ -9,7 +9,8 @@ import * as highlight from "../src/repl/highlight.js";
 import { LESSONS } from "../src/repl/lessons.js";
 import * as mock from "../src/repl/mock.js";
 import { PRESETS } from "../src/repl/presets.js";
-import { fromBody, parseChoice, parseNoul, parseScore } from "../src/repl/session.js";
+import { fromBody, parseChoice, parseNoul, parseScore, parseTurn } from "../src/repl/session.js";
+import { parse as parsePage, render as sketchRender } from "../src/repl/sketch.js";
 import { render } from "../src/repl/ui.js";
 import * as wrap from "../src/repl/wrap.js";
 import { Buffer } from "../src/tui/buffer.js";
@@ -357,5 +358,108 @@ describe("secrets", () => {
     expect(text).not.toContain("sk-not-a-real-key");
     expect(text, "the tail is enough to tell keys apart").toContain("…-key");
     expect(a.history).not.toContain(":key sk-not-a-real-key");
+  });
+});
+
+describe("a conversation as the state", () => {
+  it("grows the state one turn at a time", () => {
+    const a = app();
+    a.exec(":turn customer: The payout failed again.");
+    a.exec(":turn agent: Can you confirm the last four digits?");
+    expect(a.session.state).toEqual([
+      { who: "customer", said: "The payout failed again." },
+      { who: "agent", said: "Can you confirm the last four digits?" },
+    ]);
+    expect(a.session.turns()?.length).toBe(2);
+  });
+
+  it("names the speaker only when the first word ends in a colon", () => {
+    expect(parseTurn("customer: I want a refund")).toEqual({
+      ok: true,
+      value: { who: "customer", said: "I want a refund" },
+    });
+    expect(parseTurn("I want a refund now")).toEqual({
+      ok: true,
+      value: { said: "I want a refund now" },
+    });
+    expect(parseTurn("customer:")).toMatchObject({ ok: false });
+    expect(parseTurn("   ")).toMatchObject({ ok: false });
+  });
+
+  it("makes the text already in the state the first turn", () => {
+    const a = app();
+    a.exec("The payout failed again.");
+    a.exec(":turn agent: We are looking into it.");
+    expect(a.session.state).toEqual([
+      { said: "The payout failed again." },
+      { who: "agent", said: "We are looking into it." },
+    ]);
+    expect(transcript(a)).toContain("the state you had became the first turn");
+  });
+
+  it("refuses to reshape a state that is not a conversation", () => {
+    const a = app();
+    a.exec(':state json {"ticket": 1}');
+    a.exec(":turn agent: We are looking into it.");
+    expect(a.session.state).toEqual({ ticket: 1 });
+    expect(transcript(a)).toContain("not a conversation");
+  });
+
+  it("takes the last turn back, and the last one of all empties the state", () => {
+    const a = app();
+    a.exec(":turn customer: The payout failed again.");
+    a.exec(":turn agent: We are looking into it.");
+    a.exec(":turn drop");
+    expect(a.session.turns()).toEqual([{ who: "customer", said: "The payout failed again." }]);
+    a.exec(":turn drop");
+    expect(a.session.stateIsEmpty()).toBe(true);
+    a.exec(":turn drop");
+    expect(transcript(a)).toContain("no turns to drop");
+  });
+
+  it("reads a transcript written with the keys a chat API uses", () => {
+    const a = app();
+    a.exec(':state json [{"role": "user", "content": "Refund me"}]');
+    expect(a.session.turns()).toEqual([{ who: "user", said: "Refund me" }]);
+    a.exec(":turn agent: Looking into it.");
+    expect(a.session.turns()?.length).toBe(2);
+  });
+
+  it("keeps the questions fixed, so the same rubric reads the whole thread", () => {
+    const a = app();
+    a.exec(":preset triage");
+    a.exec(":state clear");
+    const before = a.session.questions.map(([n]) => n);
+    a.exec(":turn customer: The payout failed again.");
+    a.exec(":turn customer: I want a refund now.");
+    expect(a.session.questions.map(([n]) => n)).toEqual(before);
+    const body = JSON.parse(a.session.requestJson("jev-latest")) as Record<string, Json>;
+    expect(Array.isArray(body["state"])).toBe(true);
+    expect(Object.keys(body["questions"] as object)).toEqual(before);
+  });
+
+  it("lists the turns instead of raw JSON when the state is asked for", () => {
+    const a = app();
+    a.exec(":turn customer: The payout failed again.");
+    a.transcript = [];
+    a.exec(":state");
+    expect(transcript(a)).toContain("conversation (1 turn)");
+    expect(transcript(a)).toContain("The payout failed again.");
+  });
+
+  it("survives a round trip through a sketch page", () => {
+    const a = app();
+    a.exec(":preset triage");
+    a.exec(":turn agent: Have you tried another browser?");
+    const page = sketchRender(a.session);
+    const back = parsePage(page).toSession();
+    expect(back.turns()).toEqual(a.session.turns());
+  });
+
+  it("counts the turns in the panel preview", () => {
+    const a = app();
+    a.exec(":turn customer: The payout failed again.");
+    a.exec(":turn agent: Looking into it.");
+    expect(a.session.statePreview()).toBe("2 turns · agent: Looking into it.");
   });
 });

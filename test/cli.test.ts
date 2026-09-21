@@ -177,6 +177,39 @@ describe.runIf(built)("the one-shot commands", () => {
     expect(JSON.parse(stdout)).toMatchObject({ state: "All fine, thanks!" });
   });
 
+  it("appends turns to the state, in the order they were given", () => {
+    const { stdout } = jev(
+      ["json", "--turn", "agent: We are looking into it.", "--turn", "customer: Refund me."],
+      { input: PAGE },
+    );
+    expect(JSON.parse(stdout)).toMatchObject({
+      state: [
+        { said: expect.any(String) as unknown as string },
+        { who: "agent", said: "We are looking into it." },
+        { who: "customer", said: "Refund me." },
+      ],
+    });
+  });
+
+  it("refuses a turn on a state that is not a conversation", () => {
+    const body =
+      '{"state": {"ticket": 1}, "questions": {"a": {"type": "noul", "instructions": "x"}}}';
+    const { status, stderr } = jev(["json", "--turn", "agent: hello"], { input: body });
+    expect(status).toBe(2);
+    expect(stderr).toContain("not a conversation");
+  });
+
+  it("counts the thread in the cost table", () => {
+    const { stdout } = jev(
+      ["cost", "--turn", "agent: We are looking into it.", "--price", "0.20/1.00"],
+      {
+        input: PAGE,
+      },
+    );
+    expect(stdout).toContain("2 turns");
+    expect(stdout).toContain("asked after every turn: 2 calls");
+  });
+
   it("prices the cost table", () => {
     const { status, stdout } = jev(["cost", "--price", "0.20/1.00"], { input: PAGE });
     expect(status).toBe(0);
@@ -219,6 +252,7 @@ describe.runIf(built)("the one-shot commands", () => {
       expect(help).toContain(command);
     }
     expect(help).toContain("--state");
+    expect(help).toContain("--turn");
   });
 
   it("points at the one-shot commands when the REPL has no terminal", () => {
@@ -362,6 +396,10 @@ describe.runIf(built)("scoring a rubric offline", () => {
       const state = jev(["eval", page, "--cases", cases, "--mock", "--state", "hello"]);
       expect(state.status).toBe(2);
       expect(state.stderr).toContain("--state does not apply to eval: the cases carry the states.");
+
+      const turn = jev(["eval", page, "--cases", cases, "--mock", "--turn", "a: b"]);
+      expect(turn.status).toBe(2);
+      expect(turn.stderr).toContain("--turn does not apply to eval");
 
       const rateless = jev(["eval", page, "--cases", cases, "--mock", "--max-cost", "1"]);
       expect(rateless.status).toBe(2);

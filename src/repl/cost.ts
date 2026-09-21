@@ -19,7 +19,7 @@ import { questionToJson } from "../typesafe/questions.js";
 import type { Usage } from "../typesafe/responses.js";
 import * as mock from "./mock.js";
 import type { Parsed } from "./session.js";
-import { type Session } from "./session.js";
+import { type Session, turnsToJson } from "./session.js";
 
 /** Environment variable holding `<input>/<output>` dollars per million tokens. */
 export const PRICE_ENV = "JEV_PRICE";
@@ -168,6 +168,42 @@ export function estimate(session: Session, model: string): Estimate {
     questions,
     inputTokens,
     outputTokens,
+  };
+}
+
+/**
+ * What a conversation has cost, as opposed to what one call costs.
+ *
+ * A thread is not cheap the way it looks: the state is sent whole every time, so asking again
+ * after each turn is a call per turn over a state that keeps growing, and the tokens add up
+ * faster than the transcript does. This is the number that surprises people, so it is worth
+ * printing next to the per-call one.
+ */
+export interface Thread {
+  /** Turns in the state. */
+  readonly turns: number;
+  /** One estimate per turn: what asking after that turn cost. */
+  readonly calls: readonly Estimate[];
+  /** Every call's input tokens, added up. */
+  readonly inputTokens: number;
+  /** Every call's output tokens, added up. */
+  readonly outputTokens: number;
+}
+
+/** Estimate a call per turn, or `undefined` when the state is not a conversation. */
+export function thread(session: Session, model: string): Thread | undefined {
+  const turns = session.turns();
+  if (turns === undefined) return undefined;
+  const calls = turns.map((_, i) => {
+    const soFar = session.clone();
+    soFar.state = turnsToJson(turns.slice(0, i + 1));
+    return estimate(soFar, model);
+  });
+  return {
+    turns: turns.length,
+    calls,
+    inputTokens: calls.reduce((sum, c) => sum + c.inputTokens, 0),
+    outputTokens: calls.reduce((sum, c) => sum + c.outputTokens, 0),
   };
 }
 

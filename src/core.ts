@@ -29,10 +29,14 @@ export {
   parseNoul,
   parseRaw,
   parseScore,
+  parseTurn,
   Session,
+  turnsOf,
+  turnsToJson,
+  turnText,
   value as parseValue,
 } from "./repl/session.js";
-export type { Entry, Parsed } from "./repl/session.js";
+export type { Entry, Parsed, Turn } from "./repl/session.js";
 
 // Sketch notation: parse a page, render a session back to one, highlight it.
 export * as sketch from "./repl/sketch.js";
@@ -40,7 +44,7 @@ export * as sketch from "./repl/sketch.js";
 // Offline answers, code generation, the ready-made sessions and the guided track.
 export * as codegen from "./repl/codegen.js";
 export * as cost from "./repl/cost.js";
-export type { Cost, Estimate, QuestionEstimate, Rates } from "./repl/cost.js";
+export type { Cost, Estimate, QuestionEstimate, Rates, Thread } from "./repl/cost.js";
 export * as evaluate from "./repl/evaluate.js";
 export type { Case, Expectation, Outcome, Report } from "./repl/evaluate.js";
 export * as headless from "./repl/headless.js";
