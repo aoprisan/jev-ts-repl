@@ -3,6 +3,24 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## 0.4.0
+
+### Added
+
+- **jev, in a coding agent.** `jev mcp` serves the one-shot commands to an agent over MCP —
+  JSON-RPC on stdin and stdout, no dependencies — as `jev_notation`, `jev_check`, `jev_request`,
+  `jev_cost`, `jev_ask`, `jev_eval`, `jev_code` and `jev_presets`. Offline answers are stamped as
+  simulated in the tool result, the same way the CLI stamps them.
+- **`jev install` registers the server and the skill.** One command writes the MCP entry and
+  `SKILL.md` for Claude Code, Codex CLI, OpenCode and pi, for this user or for the repository in
+  front of you. Entries are merged into whatever is already in the config file, re-running changes
+  nothing, `--dry-run` says what it would do, and a SKILL.md that jev did not write is left alone
+  until `--force`.
+- **The skill itself**, at `skills/jev/SKILL.md`: the sketch notation, what makes a question worth
+  asking, and the check-price-run-score loop. `jev_notation` hands over the same text.
+- New `mcp`, `install` and `installer` modules on the exports, plus `SKILL_MD` and
+  `presets.page()`, which writes a ready-made session out as a page.
+
 ## 0.3.0
 
 ### Added

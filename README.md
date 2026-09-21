@@ -272,6 +272,39 @@ npx --yes http-server site -p 8080   # or any static server
 `web/` holds the sources, `site/` is the build output, and the PWA is deployed to GitHub Pages by
 `.github/workflows/pages.yml` on every push to `main`.
 
+## In a coding agent
+
+`jev` is also an MCP server and a skill, so an agent can shape and send a page without you
+pasting one in. One command registers both with whichever agents you have:
+
+```sh
+jev install                      # every agent found under your home directory
+jev install --client codex       # or name one: claude-code, codex, opencode, pi
+jev install mcp --scope project  # just the server, into the repository in front of you
+jev install --list               # the agents, and the file each one gets
+```
+
+The MCP server is the one-shot commands again, offered as tools: `jev_notation` (the notation
+itself, for when a page will not parse), `jev_check`, `jev_request`, `jev_cost`, `jev_ask`,
+`jev_eval`, `jev_code` and `jev_presets`. It speaks JSON-RPC over stdin and stdout —
+`jev mcp` runs it by hand — and it holds no key of its own: the agent starts it, so it inherits
+the agent's environment, or you write one in with `--env TYPESAFE_API_KEY=…`.
+
+The skill is [`skills/jev/SKILL.md`](skills/jev/SKILL.md): the notation, what makes a question
+worth asking, and the check-price-run-score loop. It is the SKILL.md format every one of these
+agents reads, so it works the same in all four.
+
+| Agent       | MCP entry                                       | Skill                            |
+| ----------- | ----------------------------------------------- | -------------------------------- |
+| Claude Code | `~/.claude.json`, or `.mcp.json` in the project | `~/.claude/skills/jev/`          |
+| Codex CLI   | `~/.codex/config.toml`                          | `~/.codex/skills/jev/`           |
+| OpenCode    | `~/.config/opencode/opencode.json`              | `~/.config/opencode/skills/jev/` |
+| pi          | `~/.pi/agent/mcp.json`                          | `~/.pi/agent/skills/jev/`        |
+
+Nothing else in those files is touched — the entry is merged in, and a config that cannot be
+parsed is reported rather than rewritten. pi has no MCP client of its own yet, so its entry is
+written in the shape its MCP extensions read; the skill works there as it is.
+
 ## Requirements
 
 Node 18.17 or newer (it uses the built-in `fetch`), and a terminal for the REPL itself.
@@ -292,6 +325,7 @@ npm run typecheck
 npm run build     # dist/, what npm publishes
 npm run build:web # site/, the installable web REPL
 npm run icons     # regenerate the app icons
+npm run skill     # regenerate src/agent/skill.ts from skills/jev/SKILL.md
 npm start         # run the REPL from source
 ```
 

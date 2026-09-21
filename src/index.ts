@@ -27,6 +27,22 @@ export * from "./typesafe/index.js";
 export type { Json, JsonObject } from "./json.js";
 export { compact, isEmptyValue, isObject, pretty, textOf } from "./json.js";
 
+// The agent side: MCP over stdio, and installing both into a coding agent.
+export * as install from "./agent/install.js";
+export type {
+  ClientId,
+  ClientSpec,
+  Kind as InstallKind,
+  Scope as InstallScope,
+  Server as McpServerEntry,
+  Target as InstallTarget,
+} from "./agent/install.js";
+export * as installer from "./agent/installer.js";
+export * as mcp from "./agent/mcp.js";
+export type { Host as McpHost, Result as McpResult, Sent, Tool as McpTool } from "./agent/mcp.js";
+export { serve } from "./agent/serve.js";
+export { SKILL_FILE, SKILL_MD, SKILL_NAME } from "./agent/skill.js";
+
 // The REPL itself.
 export { App, COMMANDS } from "./repl/app.js";
 export type { Msg } from "./repl/app.js";

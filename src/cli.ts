@@ -16,6 +16,9 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import * as install from "./agent/installer.js";
+import type { Host, Sent } from "./agent/mcp.js";
+import { serve } from "./agent/serve.js";
 import { compact, pretty } from "./json.js";
 import { App } from "./repl/app.js";
 import type { Msg } from "./repl/app.js";
@@ -39,6 +42,9 @@ Set TYPESAFE_API_KEY for live answers; without one, answers are simulated locall
   jev                    the REPL: :help for commands, :lesson for the guided track,
                          :sketch to write a request as one page, :quit to leave
   jev <command> [file]   one shot, no terminal needed
+  jev mcp                serve the same commands to an agent over MCP, on stdin/stdout
+  jev install            register the MCP server and the jev skill with an agent
+                         (Claude Code, Codex, OpenCode, pi) — jev install --help
 
 Commands
 ${headless.COMMANDS.map(([name, about]) => `  ${name.padEnd(22)} ${about}`).join("\n")}
@@ -497,8 +503,98 @@ async function runCommand(
   }
 }
 
+/**
+ * One live call for an MCP tool, with the page's own model when it pins one.
+ *
+ * `jev run` resolves the model once, on the command line; a server answers pages it has never
+ * seen, so each one gets to say what it should be asked with.
+ */
+function mcpAsk(
+  client: Client,
+  fallback: string,
+  timeoutMs: number | undefined,
+): (session: Session) => Promise<Sent> {
+  return async (session) => {
+    const model = session.model ?? fallback;
+    const call = timeoutMs === undefined ? { model } : { model, timeoutMs };
+    try {
+      const response = await client.systemOne(session.state, session.questions, call);
+      return {
+        ok: true,
+        answers: headless.liveAnswers(session, response),
+        usage: response.usage,
+        raw: response.raw,
+      };
+    } catch (e) {
+      return { ok: false, error: linesText(errorLines(e)).trim() };
+    }
+  };
+}
+
+/** `jev mcp`: the one-shot commands again, this time as tools an agent can call. */
+async function runMcp(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  err: (text: string) => void,
+): Promise<number> {
+  let options: Options;
+  try {
+    options = parseOptions(argv, env);
+    if (options.file !== "-") {
+      throw new UsageError("jev mcp takes no file: the pages arrive in the tool calls.");
+    }
+    if (options.state !== undefined || options.cases !== undefined) {
+      throw new UsageError("--state and --cases belong to a tool call, not to the server.");
+    }
+  } catch (e) {
+    err(`jev mcp: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 2;
+  }
+
+  const apiKey = env[API_KEY_ENV];
+  const live = !options.mock && apiKey !== undefined && apiKey !== "";
+  let client: Client | undefined;
+  if (live) {
+    try {
+      client = new Client({ apiKey });
+    } catch (e) {
+      err(`${linesText(errorLines(e))}\n`);
+      return 1;
+    }
+  }
+  const model = options.model ?? client?.defaultModel ?? "jev-latest";
+  const host: Host = {
+    version: VERSION,
+    model,
+    live: client !== undefined,
+    rates: options.rates,
+    ask:
+      client === undefined
+        ? (session) => Promise.resolve({ ok: true, answers: headless.mockAnswers(session) } as Sent)
+        : mcpAsk(client, model, options.timeoutMs),
+  };
+
+  // stdout carries the protocol and nothing else, so the greeting goes to stderr.
+  err(
+    `jev mcp ${VERSION}: ${host.live ? `live, model ${model}` : "no API key — every answer is simulated"}\n`,
+  );
+  await serve(host);
+  return 0;
+}
+
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const first = argv[0];
+  if (first === "mcp") {
+    return runMcp(argv.slice(1), process.env, (text) => process.stderr.write(text));
+  }
+  if (first === "install") {
+    return install.runInstall(
+      argv.slice(1),
+      process.env,
+      (text) => process.stdout.write(text),
+      (text) => process.stderr.write(text),
+    );
+  }
   if (first !== undefined && headless.isCommand(first)) {
     return runCommand(
       first,
