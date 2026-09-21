@@ -3,7 +3,7 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
-## Unreleased
+## 0.6.0
 
 ### Added
 
@@ -17,6 +17,8 @@ pre-1.0, so a minor bump may still move the surface under you.
   question, builder mode stays open on the type just used instead of falling back to a noul, and
   the form lists what the session already holds, so a rubric of three nouls or two choices is
   named and typed rather than re-selected each time.
+- New `isWordLeft`, `isWordRight`, `isDeleteWordLeft`, `wordLeft` and `wordRight` on the exports,
+  alongside the key decoder — the bindings and the motion a text field needs to answer Alt-arrow.
 
 ### Fixed
 
