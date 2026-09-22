@@ -30,6 +30,7 @@ import * as cost from "./cost.js";
 import { BAD, bold, CHOICE, colorFor, DIM, dim, errorLines, SCORE } from "./format.js";
 import type { Answered } from "./headless.js";
 import type { Parsed, Session } from "./session.js";
+import { turnsOf, turnsToJson } from "./session.js";
 
 /** One labelled state: what to judge, and what the rubric should say about it. */
 export interface Case {
@@ -39,11 +40,22 @@ export interface Case {
   readonly state: Json;
   /** Question name → expectation, already checked against the session's questions. */
   readonly expect: Readonly<Record<string, Expectation>>;
+  /**
+   * For a case labelled per turn: which prefix of the conversation this is (1-based), and how many
+   * turns the whole conversation has. Such a case is sent once per turn, and each is a case.
+   */
+  readonly turn?: number;
+  readonly turns?: number;
 }
 
 /** What one question is expected to answer, in the shape its kind is scored in. */
 export type Expectation =
-  | { readonly kind: "noul"; readonly yes: boolean }
+  | {
+      readonly kind: "noul";
+      readonly yes: boolean;
+      /** Set when the label was `{"by_turn": k}`: the turn it becomes true, `null` for never. */
+      readonly byTurn?: number | null;
+    }
   | { readonly kind: "choice"; readonly label: string }
   | { readonly kind: "score"; readonly level: number };
 
@@ -64,11 +76,11 @@ export function parseCases(text: string, session: Session): Parsed<Case[]> {
     for (const [name, value] of Object.entries(one.wanted)) {
       const question = questionOf(session, name);
       if (question === undefined) return `no question named ${JSON.stringify(name)} on the page.`;
-      const expectation = expected(name, question, value);
+      const expectation = expected(name, question, value, turnCount(one.state));
       if (!expectation.ok) return expectation.error;
       expect[name] = expectation.value;
     }
-    cases.push(caseOf(one, expect));
+    cases.push(...casesOf(one, expect));
     return undefined;
   });
   return failed === undefined ? ok(cases) : err(failed);
@@ -111,13 +123,13 @@ export function parseCompareCases(
       ] as const;
       for (const [question, into, label] of sides) {
         if (question === undefined) continue;
-        const expectation = expected(name, question, value);
+        const expectation = expected(name, question, value, turnCount(one.state));
         if (!expectation.ok) return `${label}: ${expectation.error}`;
         into[name] = expectation.value;
       }
     }
-    if (Object.keys(expectA).length > 0) left.push(caseOf(one, expectA));
-    if (Object.keys(expectB).length > 0) right.push(caseOf(one, expectB));
+    left.push(...casesOf(one, expectA));
+    right.push(...casesOf(one, expectB));
     return undefined;
   });
   return failed === undefined ? ok([left, right]) : err(failed);
@@ -170,10 +182,42 @@ function readCase(text: string, line: number): Parsed<RawCase> {
   return ok(id === undefined ? { line, state, wanted } : { line, id, state, wanted });
 }
 
-function caseOf(one: RawCase, expect: Record<string, Expectation>): Case {
-  return one.id === undefined
-    ? { line: one.line, state: one.state, expect }
-    : { line: one.line, id: one.id, state: one.state, expect };
+/**
+ * The cases one line becomes: itself, or — when a noul is labelled per turn — one case per prefix
+ * of the conversation. A per-turn noul expects `turn >= k` at every prefix; the line's other
+ * labels were written about the whole conversation, so they go on the last prefix only. A case
+ * left with nothing to score is not sent at all.
+ */
+function casesOf(one: RawCase, expect: Record<string, Expectation>): Case[] {
+  const named = (fields: Omit<Case, "line" | "id">): Case =>
+    one.id === undefined
+      ? { line: one.line, ...fields }
+      : { line: one.line, id: one.id, ...fields };
+  const entries = Object.entries(expect);
+  if (entries.length === 0) return [];
+  const turns = turnsOf(one.state);
+  const perTurn = entries.some(([, e]) => e.kind === "noul" && e.byTurn !== undefined);
+  if (!perTurn || turns === undefined) return [named({ state: one.state, expect })];
+  const out: Case[] = [];
+  for (let turn = 1; turn <= turns.length; turn++) {
+    const at: Record<string, Expectation> = {};
+    for (const [name, e] of entries) {
+      if (e.kind === "noul" && e.byTurn !== undefined) {
+        at[name] = { kind: "noul", yes: e.byTurn !== null && turn >= e.byTurn, byTurn: e.byTurn };
+      } else if (turn === turns.length) {
+        at[name] = e;
+      }
+    }
+    if (Object.keys(at).length === 0) continue;
+    const state = turnsToJson(turns.slice(0, turn));
+    out.push(named({ state, expect: at, turn, turns: turns.length }));
+  }
+  return out;
+}
+
+/** How many turns a state has, when it is a conversation. */
+function turnCount(state: Json): number | undefined {
+  return turnsOf(state)?.length;
 }
 
 function questionOf(session: Session, name: string): Question | undefined {
@@ -181,9 +225,23 @@ function questionOf(session: Session, name: string): Question | undefined {
 }
 
 /** Check one expected value against the question it names, and store it the way it is scored. */
-function expected(name: string, question: Question, value: Json): Parsed<Expectation> {
+function expected(
+  name: string,
+  question: Question,
+  value: Json,
+  turns: number | undefined,
+): Parsed<Expectation> {
+  if (
+    question.kind !== "noul" &&
+    question.kind !== "raw" &&
+    isObject(value) &&
+    "by_turn" in value
+  ) {
+    return err(`by_turn is for a noul, and ${name} is a ${question.kind}.`);
+  }
   switch (question.kind) {
     case "noul":
+      if (isObject(value)) return byTurn(name, value, turns);
       if (typeof value !== "boolean") {
         return err(`${name} is a noul: expected true or false, got ${compact(value)}.`);
       }
@@ -215,6 +273,30 @@ function expected(name: string, question: Question, value: Json): Parsed<Expecta
     case "raw":
       return err(`${name} is a raw question: raw questions cannot be scored.`);
   }
+}
+
+/**
+ * `{"by_turn": k}`: false before turn `k` of the conversation and true from it on, or never true
+ * when `k` is null. It only means something over a conversation, and only for a turn it has.
+ */
+function byTurn(name: string, value: JsonObject, turns: number | undefined): Parsed<Expectation> {
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "by_turn") {
+    return err(
+      `${name}: a per-turn expectation is {"by_turn": n}, the turn it becomes true, or null for never; got ${compact(value)}.`,
+    );
+  }
+  if (turns === undefined) {
+    return err(`${name} gives by_turn, but the state is not a conversation of turns.`);
+  }
+  const k = value["by_turn"] as Json;
+  if (k === null) return ok({ kind: "noul", yes: false, byTurn: null });
+  if (typeof k !== "number" || !Number.isInteger(k) || k < 1 || k > turns) {
+    return err(
+      `${name} by_turn must be a whole turn from 1 to ${turns}, or null for never; got ${compact(k)}.`,
+    );
+  }
+  return ok({ kind: "noul", yes: false, byTurn: k });
 }
 
 /** What one case's request came back as. */
@@ -321,6 +403,33 @@ export interface NoulReport {
   readonly accuracy: number;
   readonly best: { readonly threshold: number; readonly f1: number };
   readonly sweep: readonly SweepRow[];
+  /** When it noticed, for the conversations labelled per turn; absent when none were. */
+  readonly latency?: Latency;
+}
+
+/** One conversation labelled per turn: the turn it should have said yes, and the turn it did. */
+export interface ThreadLatency {
+  readonly case: number;
+  readonly id?: string;
+  /** `by_turn`; `null` when it should never have said yes. */
+  readonly expected: number | null;
+  /** The first turn at or above the threshold; `null` when there was none. */
+  readonly detected: number | null;
+  /** `detected − expected`, negative when early; `null` unless both are known. */
+  readonly latency: number | null;
+}
+
+/** How early or late a noul notices, over the conversations labelled per turn. */
+export interface Latency {
+  readonly threads: number;
+  readonly onTime: number;
+  readonly early: number;
+  readonly late: number;
+  readonly missed: number;
+  readonly falseAlarms: number;
+  /** Mean latency over the threads that expected a yes and got one; `undefined` when none did. */
+  readonly mean: number | undefined;
+  readonly cases: readonly ThreadLatency[];
 }
 
 export interface ChoiceReport {
@@ -350,6 +459,8 @@ export type QuestionReport = NoulReport | ChoiceReport | ScoreReport;
 /** A case that never produced a full set of answers, and why. */
 export interface CaseError {
   readonly case: number;
+  /** The prefix of a per-turn case that failed. */
+  readonly turn?: number;
   readonly id?: string;
   readonly message: string;
 }
@@ -383,6 +494,8 @@ const CUTS = [0, 0.2, 0.4, 0.6, 0.8];
 interface Scored {
   readonly line: number;
   readonly id: string | undefined;
+  readonly turn: number | undefined;
+  readonly turns: number | undefined;
   readonly expect: Readonly<Record<string, Expectation>>;
   readonly answers: ReadonlyMap<string, Answer>;
   readonly usage: Usage | undefined;
@@ -432,11 +545,12 @@ function scoredOf(
   cases.forEach((one, at) => {
     const outcome = outcomes[at];
     const failed = (message: string): void => {
-      errors.push(
-        one.id === undefined
-          ? { case: one.line, message }
-          : { case: one.line, id: one.id, message },
-      );
+      const error: CaseError = { case: one.line, message };
+      errors.push({
+        ...error,
+        ...(one.turn === undefined ? {} : { turn: one.turn }),
+        ...(one.id === undefined ? {} : { id: one.id }),
+      });
     };
     if (outcome === undefined) return failed("nothing was sent for this case.");
     if (!outcome.ok) return failed(outcome.error);
@@ -452,6 +566,8 @@ function scoredOf(
     scored.push({
       line: one.line,
       id: one.id,
+      turn: one.turn,
+      turns: one.turns,
       expect: one.expect,
       answers,
       usage: outcome.usage,
@@ -488,7 +604,8 @@ function noulReport(name: string, rows: readonly Scored[], threshold: number): N
   let best = sweep[0] as SweepRow;
   for (const row of sweep) if (row.f1 > best.f1) best = row;
   const brier = mean(points.map(({ p, yes }) => (p - (yes ? 1 : 0)) ** 2));
-  return {
+  const latency = latencyOf(name, rows, threshold);
+  const out: NoulReport = {
     name,
     kind: "noul",
     cases: points.length,
@@ -497,6 +614,61 @@ function noulReport(name: string, rows: readonly Scored[], threshold: number): N
     accuracy: chosen.accuracy,
     best: { threshold: best.threshold, f1: best.f1 },
     sweep,
+  };
+  return latency === undefined ? out : { ...out, latency };
+}
+
+/**
+ * Detection latency: for each conversation labelled per turn, the first turn the noul said yes,
+ * against the turn it should have. A thread with a prefix that errored is left out, because its
+ * first yes might be the one that is missing.
+ */
+function latencyOf(name: string, rows: readonly Scored[], threshold: number): Latency | undefined {
+  const threads = new Map<number, Scored[]>();
+  for (const row of rows) {
+    const expectation = row.expect[name] as Extract<Expectation, { kind: "noul" }>;
+    if (expectation.byTurn === undefined || row.turn === undefined) continue;
+    const thread = threads.get(row.line) ?? [];
+    thread.push(row);
+    threads.set(row.line, thread);
+  }
+  if (threads.size === 0) return undefined;
+  const cases: ThreadLatency[] = [];
+  let onTime = 0;
+  let early = 0;
+  let late = 0;
+  let missed = 0;
+  let falseAlarms = 0;
+  const lags: number[] = [];
+  for (const [line, thread] of threads) {
+    const first = thread[0] as Scored;
+    if (thread.length !== first.turns) continue;
+    thread.sort((x, y) => (x.turn as number) - (y.turn as number));
+    const expected = (first.expect[name] as Extract<Expectation, { kind: "noul" }>).byTurn ?? null;
+    const hit = thread.find((row) => (row.answers.get(name) as NoulAnswer).noul >= threshold);
+    const detected = hit?.turn ?? null;
+    const lag = expected === null || detected === null ? null : detected - expected;
+    if (expected === null) {
+      if (detected !== null) falseAlarms += 1;
+    } else if (lag === null) missed += 1;
+    else {
+      lags.push(lag);
+      if (lag === 0) onTime += 1;
+      else if (lag < 0) early += 1;
+      else late += 1;
+    }
+    const base: ThreadLatency = { case: line, expected, detected, latency: lag };
+    cases.push(first.id === undefined ? base : { ...base, id: first.id });
+  }
+  return {
+    threads: cases.length,
+    onTime,
+    early,
+    late,
+    missed,
+    falseAlarms,
+    mean: lags.length === 0 ? undefined : mean(lags),
+    cases,
   };
 }
 
@@ -729,7 +901,32 @@ function sweepLines(question: NoulReport): Line[] {
     );
   }
   out.push(line([span("    "), dim(`best f1 at ${fixed(question.best.threshold)}`)]));
+  if (question.latency !== undefined) out.push(latencyLine(question.latency));
   return out;
+}
+
+/** The one line that says when a noul noticed, over the conversations labelled per turn. */
+function latencyLine(latency: Latency): Line {
+  const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const mean =
+    latency.mean === undefined
+      ? "·"
+      : `${signed(latency.mean)} turn${Math.abs(latency.mean) === 1 ? "" : "s"}`;
+  return line([
+    span("    "),
+    dim("by turn  "),
+    span(
+      [
+        plural(latency.threads, "thread"),
+        `${latency.onTime} on time`,
+        `${latency.early} early`,
+        `${latency.late} late`,
+        `${latency.missed} missed`,
+        plural(latency.falseAlarms, "false alarm"),
+        `mean latency ${mean}`,
+      ].join(" · "),
+    ),
+  ]);
 }
 
 function gateLines(gate: readonly GateRow[], accuracy: string): Line[] {
@@ -796,7 +993,7 @@ function confusionLines(question: ChoiceReport): Line[] {
 }
 
 function errorCaseLines(failed: CaseError, prefix = ""): Line[] {
-  const name = `${prefix}${caseName(failed.case, failed.id)}`;
+  const name = `${prefix}${caseName(failed.case, failed.id, failed.turn)}`;
   const [first, ...rest] = failed.message.split("\n");
   const out: Line[] = [
     line([span("  "), span(`${name}: `, { fg: BAD }), span((first ?? "").trim())]),
@@ -830,6 +1027,7 @@ export function reportJson(report: Report): Json {
     answered: report.answered,
     errors: report.errors.map((failed) => {
       const out: JsonObject = { case: failed.case };
+      if (failed.turn !== undefined) out["turn"] = failed.turn;
       if (failed.id !== undefined) out["id"] = failed.id;
       out["message"] = failed.message;
       return out;
@@ -859,6 +1057,7 @@ function questionJson(question: QuestionReport): Json {
         recall: row.recall ?? null,
         f1: row.f1,
       })),
+      ...(question.latency === undefined ? {} : { latency: latencyJson(question.latency) }),
     };
   }
   if (question.kind === "choice") {
@@ -878,6 +1077,26 @@ function questionJson(question: QuestionReport): Json {
     withinOne: question.withinOne,
     mae: question.mae,
     gate: question.gate.map(gateJson),
+  };
+}
+
+function latencyJson(latency: Latency): Json {
+  return {
+    threads: latency.threads,
+    onTime: latency.onTime,
+    early: latency.early,
+    late: latency.late,
+    missed: latency.missed,
+    falseAlarms: latency.falseAlarms,
+    mean: latency.mean ?? null,
+    cases: latency.cases.map((one) => {
+      const out: JsonObject = { case: one.case };
+      if (one.id !== undefined) out["id"] = one.id;
+      out["expected"] = one.expected;
+      out["detected"] = one.detected;
+      out["latency"] = one.latency;
+      return out;
+    }),
   };
 }
 
@@ -947,6 +1166,7 @@ export interface McNemar {
 /** A case the two pages answered differently. */
 export interface Flip {
   readonly case: number;
+  readonly turn?: number;
   readonly id?: string;
   /** What the case expects, and what each page predicted, in the question's own terms. */
   readonly expected: Json;
@@ -1108,8 +1328,8 @@ export function compare(
 }
 
 /** Which case a scored row came from, so the same case can be found on the other page. */
-function keyOf(one: { readonly line: number }): string {
-  return String(one.line);
+function keyOf(one: { readonly line: number; readonly turn?: number | undefined }): string {
+  return one.turn === undefined ? String(one.line) : `${one.line}:${one.turn}`;
 }
 
 function sumUsage(a: ReportUsage, b: ReportUsage, rates: Rates | undefined): ReportUsage {
@@ -1225,8 +1445,15 @@ function shared(
     if (status === "fixed") fixed += 1;
     else if (status === "broke") broke += 1;
     else changed += 1;
-    const base = { case: pair.one.line, expected: pair.expected, a: pair.a, b: pair.b, status };
-    flips.push(pair.one.id === undefined ? base : { ...base, id: pair.one.id });
+    flips.push({
+      case: pair.one.line,
+      ...(pair.one.turn === undefined ? {} : { turn: pair.one.turn }),
+      ...(pair.one.id === undefined ? {} : { id: pair.one.id }),
+      expected: pair.expected,
+      a: pair.a,
+      b: pair.b,
+      status,
+    });
   }
   return {
     name,
@@ -1371,7 +1598,7 @@ function sharedLines(question: Shared, width: number): Line[] {
   );
 
   const shown = question.flips.slice(0, FLIPS_SHOWN);
-  const names = shown.map((flip) => caseName(flip.case, flip.id));
+  const names = shown.map((flip) => caseName(flip.case, flip.id, flip.turn));
   const moves = shown.map(
     (flip) => `${reading(question.kind, flip.a)} → ${reading(question.kind, flip.b)}`,
   );
@@ -1416,9 +1643,12 @@ function reading(kind: "noul" | "choice" | "score", value: Json): string {
   return typeof value === "string" ? value : compact(value);
 }
 
-/** `case 7 (t-007)`: the line in the cases file, and the id when the case has one. */
-function caseName(line: number, id: string | undefined): string {
-  return `case ${line}${id === undefined ? "" : ` (${id})`}`;
+/**
+ * `case 7 turn 2 (t-007)`: the line in the cases file, the prefix of a case labelled per turn, and
+ * the id when the case has one.
+ */
+function caseName(line: number, id: string | undefined, turn?: number): string {
+  return `case ${line}${turn === undefined ? "" : ` turn ${turn}`}${id === undefined ? "" : ` (${id})`}`;
 }
 
 /** A change, signed either way, so a regression reads as one. */
@@ -1460,6 +1690,7 @@ export function compareJson(comparison: Comparison): Json {
       },
       flips: question.flips.map((flip) => {
         const out: JsonObject = { case: flip.case };
+        if (flip.turn !== undefined) out["turn"] = flip.turn;
         if (flip.id !== undefined) out["id"] = flip.id;
         out["expected"] = flip.expected;
         out["a"] = flip.a;

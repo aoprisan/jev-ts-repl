@@ -30,6 +30,15 @@ b.jev --cases cases.jsonl` runs both pages over the same labelled states and rep
   question was left alone. `jev_eval` over MCP takes `calibrate` and hands back the page. New
   `Session.bars`, `bar` and `thresholdOf`; `sketch.setBars` and `parseBar`; `evaluate.calibrate`,
   `calibrationLines` and `calibrationJson`.
+- **`:trend` follows a rubric across a conversation.** Every question is asked again after each
+  turn of the thread in the state, and drawn as one line apiece — a spark across the turns, where
+  it started and ended, and the turns it changed its mind — with the cost line counting every
+  call. New `trend` module on both exports.
+- **A conversation can be labelled per turn.** In a cases file, `{"by_turn": 3}` on a noul means
+  false before turn 3 and true from it on, and `{"by_turn": null}` means never; such a case is sent
+  once per prefix of the conversation and each prefix is scored as a case. The noul's block then
+  says when it noticed: how many threads it caught on time, early, late or never, how many false
+  alarms, and the mean latency in turns. A case without `by_turn` reads exactly as before.
 
 ## 0.6.0
 

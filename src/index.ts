@@ -55,7 +55,7 @@ export type { Cost, Estimate, QuestionEstimate, Rates } from "./repl/cost.js";
 export { Editor, PREVIEWS } from "./repl/editor.js";
 export type { Outcome as EditorOutcome, Preview } from "./repl/editor.js";
 export * as evaluate from "./repl/evaluate.js";
-export type { Case, Comparison, Expectation, Outcome, Report } from "./repl/evaluate.js";
+export type { Case, Comparison, Expectation, Latency, Outcome, Report } from "./repl/evaluate.js";
 export * as format from "./repl/format.js";
 export * as headless from "./repl/headless.js";
 export type { Answered, Command as HeadlessCommand } from "./repl/headless.js";
@@ -63,6 +63,8 @@ export * as highlight from "./repl/highlight.js";
 export { LESSONS } from "./repl/lessons.js";
 export type { Lesson } from "./repl/lessons.js";
 export * as mock from "./repl/mock.js";
+export * as trend from "./repl/trend.js";
+export type { Series as TrendSeries } from "./repl/trend.js";
 export { find as findPreset, PRESETS } from "./repl/presets.js";
 export type { Preset } from "./repl/presets.js";
 export {

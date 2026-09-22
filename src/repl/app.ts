@@ -32,6 +32,7 @@ import {
   turnLines,
   WARN,
 } from "./format.js";
+import * as headless from "./headless.js";
 import * as highlight from "./highlight.js";
 import { LESSONS } from "./lessons.js";
 import * as mock from "./mock.js";
@@ -48,13 +49,15 @@ import {
   turnText,
 } from "./session.js";
 import * as sketch from "./sketch.js";
+import * as trend from "./trend.js";
 
 /** Everything that can move the app forward. */
 export type Msg =
   | { kind: "key"; event: KeyEvent }
   | { kind: "tick" }
   | { kind: "answered"; response?: SystemOneResponse; error?: unknown; elapsedMs: number }
-  | { kind: "models"; response?: ListModelsResponse; error?: unknown };
+  | { kind: "models"; response?: ListModelsResponse; error?: unknown }
+  | { kind: "trend"; responses?: SystemOneResponse[]; error?: unknown };
 
 export const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   [":help", "this list; :help concepts for the model itself"],
@@ -63,6 +66,7 @@ export const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   [":preset", "load a ready-made session — :preset list"],
   [":state", "set the state — :state <text> | :state json {…} | :state clear"],
   [":turn", "grow the state into a conversation — :turn <who>: <text> | :turn list | :turn drop"],
+  [":trend", "every question after each turn of the conversation, as one line apiece"],
   [":noul", ":noul <name> <instructions> [| yes: …] [| no: …]"],
   [":choice", ":choice <name> <instructions> | label=desc | label=desc"],
   [":score", ":score <name> <instructions> | level | level | …"],
@@ -154,6 +158,8 @@ export class App {
   quit = false;
 
   #histIdx: number | undefined;
+  /** The prefixes a live `:trend` is asking about, so the answers can be lined up when they land. */
+  #trendSteps: Session[] = [];
   #stash = "";
   readonly #send: (msg: Msg) => void;
 
@@ -258,6 +264,21 @@ export class App {
         this.pending = false;
         if (msg.response) {
           this.#showResponse(msg.response, msg.elapsedMs);
+        } else {
+          this.#blank();
+          this.#extend(errorLines(msg.error));
+        }
+        break;
+      case "trend":
+        this.pending = false;
+        if (msg.responses) {
+          const steps = this.#trendSteps;
+          const perTurn = msg.responses.map((response, i) =>
+            headless.liveAnswers(steps[i] ?? this.session, response),
+          );
+          const last = msg.responses[msg.responses.length - 1];
+          if (last) this.lastRaw = pretty(last.raw);
+          this.#drawTrend(steps, perTurn, msg.responses);
         } else {
           this.#blank();
           this.#extend(errorLines(msg.error));
@@ -514,6 +535,9 @@ export class App {
         break;
       case ":turn":
         this.#turnCmd(args);
+        break;
+      case ":trend":
+        this.trend();
         break;
       case ":noul":
         this.#add(parseNoul(args));
@@ -1199,6 +1223,94 @@ export class App {
       (response) => this.#send({ kind: "answered", response, elapsedMs: Date.now() - started }),
       (error: unknown) => this.#send({ kind: "answered", error, elapsedMs: Date.now() - started }),
     );
+  }
+
+  /**
+   * `:trend` — every question asked again after each turn of the conversation, drawn as one line
+   * per question: a spark across the turns, where it started and ended, and the turns it changed
+   * its mind. A thread of n turns is n calls, so the cost line counts all of them.
+   */
+  trend(): void {
+    if (this.pending) {
+      this.#warn("a request is already in flight.");
+      return;
+    }
+    if (this.session.questions.length === 0) {
+      this.#warn(
+        "no questions yet — :noul, :choice or :score first (`:preset triage` loads a set).",
+      );
+      return;
+    }
+    const steps = trend.prefixes(this.session);
+    if (steps.length === 0) {
+      this.#warn(
+        ":trend needs a conversation — `:turn <who>: <text>` builds one, a turn at a time.",
+      );
+      return;
+    }
+    if (this.mock || !this.client) {
+      this.#drawTrend(steps, steps.map(headless.mockAnswers), undefined);
+      return;
+    }
+    const client = this.client;
+    const model = this.modelName();
+    const options = this.timeoutMs === undefined ? { model } : { model, timeoutMs: this.timeoutMs };
+    this.pending = true;
+    this.#trendSteps = steps;
+    this.#blank();
+    const n = steps.length;
+    this.#note(
+      `asking after each of ${n} turn${n === 1 ? "" : "s"}: ${n} call${n === 1 ? "" : "s"}`,
+    );
+    // One after another: each prefix is its own call, and the thread is short.
+    void (async () => {
+      const responses: SystemOneResponse[] = [];
+      for (const step of steps) {
+        responses.push(await client.systemOne(step.state, step.questions, options));
+      }
+      return responses;
+    })().then(
+      (responses) => this.#send({ kind: "trend", responses }),
+      (error: unknown) => this.#send({ kind: "trend", error }),
+    );
+  }
+
+  #drawTrend(
+    steps: readonly Session[],
+    perTurn: ReadonlyArray<readonly headless.Answered[]>,
+    responses: readonly SystemOneResponse[] | undefined,
+  ): void {
+    const n = steps.length;
+    this.#heading(`trend · ${n} turn${n === 1 ? "" : "s"}`);
+    this.#extend(trend.trendLines(trend.series(this.session, perTurn, this.threshold)));
+    const model = this.modelName();
+    const calls = `over ${n} call${n === 1 ? "" : "s"}`;
+    const counted =
+      responses !== undefined &&
+      responses.every(
+        (r) => r.usage.inputTokens !== undefined && r.usage.outputTokens !== undefined,
+      );
+    let input = 0;
+    let output = 0;
+    if (counted) {
+      for (const r of responses) {
+        input += r.usage.inputTokens ?? 0;
+        output += r.usage.outputTokens ?? 0;
+      }
+    } else {
+      for (const step of steps) {
+        const estimate = cost.estimate(step, model);
+        input += estimate.inputTokens;
+        output += estimate.outputTokens;
+      }
+    }
+    const money =
+      this.rates === undefined ? "" : ` · ${cost.usd(cost.price(input, output, this.rates).total)}`;
+    const tokens = `${input} in / ${output} out tokens${money} ${calls}`;
+    if (counted) this.#note(tokens);
+    else if (responses === undefined) {
+      this.#note(`≈ ${tokens} — estimated, since nothing was sent.`);
+    } else this.#note(`≈ ${tokens} — estimated, nothing was counted.`);
   }
 
   #askMock(): void {

@@ -439,6 +439,38 @@ describe.runIf(built)("scoring a rubric offline", () => {
     });
   });
 
+  it("scores a conversation labelled per turn, and says when the noul noticed", () => {
+    const thread = JSON.stringify([
+      { who: "customer", said: "Hi there" },
+      { who: "agent", said: "How can I help?" },
+      { who: "customer", said: "Checkout has been down for an hour, we are losing orders" },
+    ]);
+    const cases = `{"id": "th-1", "state": ${thread}, "expect": {"is_urgent": {"by_turn": 3}, "department": "technical"}}`;
+    withFiles(cases, (page, casesPath) => {
+      const { status, stdout } = jev(["eval", page, "--cases", casesPath, "--mock"]);
+      expect(status).toBe(0);
+      expect(stdout).toMatch(/is_urgent\s+noul\s+3 cases/);
+      expect(stdout).toMatch(/department\s+choice\s+1 case /);
+      expect(stdout).toMatch(/by turn {2}1 thread · /);
+      expect(stdout).toContain("3 cases · 3 answered · 0 errors");
+      const json = jev(["eval", page, "--cases", casesPath, "--mock", "--json"]);
+      const report = JSON.parse(json.stdout) as {
+        questions: {
+          is_urgent: { latency: { threads: number; cases: Array<{ expected: number }> } };
+        };
+      };
+      expect(report.questions.is_urgent.latency.threads).toBe(1);
+      expect(report.questions.is_urgent.latency.cases[0]?.expected).toBe(3);
+    });
+    withFiles('{"state": "plain text", "expect": {"is_urgent": {"by_turn": 2}}}', (page, c) => {
+      const { status, stderr } = jev(["eval", page, "--cases", c, "--mock"]);
+      expect(status).toBe(1);
+      expect(stderr).toContain(
+        "cases line 1: is_urgent gives by_turn, but the state is not a conversation of turns.",
+      );
+    });
+  });
+
   it("lists eval and its flags in --help", () => {
     const help = jev(["--help"]).stdout;
     expect(help).toContain("eval");

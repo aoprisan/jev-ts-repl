@@ -552,9 +552,9 @@ the first two, and so on, `n` calls for `n` turns — and draws one line per que
 
 ```text
 trend · 4 turns
-  is_urgent    noul    ▁▂▅█  0.12 → 0.91            turn 3 yes
-  department   choice  ▃▃▆█  technical 0.35 → 0.80  turn 2 technical
-  frustration  score   ▁▁▃▆  0.20 → 1.70 of 2       turn 3 level 1 · turn 4 level 2
+  is_urgent    noul    ▂▂▅▇  0.12 → 0.91            turn 3 yes
+  department   choice  ▃▃▆▇  technical 0.35 → 0.80  turn 2 technical
+  frustration  score   ▂▂▄▇  0.20 → 1.70 of 2       turn 3 level 1 · turn 4 level 2
   ≈ 612 in / 400 out tokens over 4 calls — estimated, since nothing was sent.
 ```
 
@@ -570,17 +570,20 @@ trend · 4 turns
 - The changes: the discrete reading at each turn — `yes`/`no` at the question's threshold for a
   noul, the chosen label for a choice, `level <n>` (the rounded level) for a score — listed as
   `turn <t> <reading>` for every turn after the first whose reading differs from the turn before,
-  joined with `·`; when nothing changes, `<reading> throughout`.
+  joined with `·`; when nothing changes, `<reading> throughout`. Exported as
+  `changes(readings)`.
 - Columns: two spaces, the name padded to the widest, two spaces, the kind padded to 8 in its
   colour, the spark, two spaces, the summary padded to the widest summary, two spaces, the changes
   dim.
-- A question with no answer (raw, or missing from a live response) prints
-  `  <name>  <kind>  no answer to follow`.
+- A question with no answer at some turn (raw, or missing from a live response) prints two
+  spaces, the name padded, two spaces, the kind padded to 8, then dim `no answer to follow`.
 - The cost line follows `:ask`'s: in mock mode, estimated over every prefix, exactly
-  `≈ <in> in / <out> out tokens[ · $x] over <n> calls — estimated, since nothing was sent.`; live,
+  `≈ <in> in / <out> out tokens[ · $x] over <n> call(s) — estimated, since nothing was sent.`; live,
   the counted usage summed, `<in> in / <out> out tokens[ · $x] over <n> calls`, falling back to the
   estimated form with `— estimated, nothing was counted.` when any response lacks usage.
-- Live mode sends the prefixes one after another, notes `asking after each of <n> turns: <n>
+- `:help` lists it as exactly `:trend` — `every question after each turn of the conversation, as
+one line apiece`, right after `:turn`.
+- Live mode sends the prefixes one after another, with the session's model and `:timeout`, notes `asking after each of <n> turns: <n>
 calls` first, and draws the trend when the last one is back. An error on any call is shown the
   way `:ask` shows one and no trend is drawn.
 
@@ -638,6 +641,9 @@ A noul in a case whose state is a conversation may be labelled per turn:
 - A case without `by_turn` is read exactly as before, conversation or not.
 - Every metric counts the prefixes as the cases they are: a thread of four turns is four points in
   the sweep and four cases in the totals.
+- `Case` gains `turn` (the prefix, 1-based) and `turns` (the thread's length) on such cases, and a
+  noul `Expectation` gains `byTurn` (`k` or `null`). The prefixes are built with
+  `turnsToJson(turns.slice(0, t))`, like `:trend`'s.
 
 Errors, as `cases line N: <message>`, exactly:
 
@@ -667,8 +673,10 @@ One more line in the noul's block, after `best f1 at`, exactly:
     by turn  6 threads · 3 on time · 1 early · 1 late · 1 missed · 0 false alarms · mean latency +0.25 turns
 ```
 
-`thread`, `false alarm` and `turn` take an `s` unless the count (or the mean, for `turn`, when it
-is exactly 1 or -1) is 1; an undefined mean prints `mean latency ·`. In JSON the noul gains:
+`thread` and `false alarm` take an `s` unless their count is 1; `turn` takes one unless the mean
+is exactly 1 or -1. The mean is a signed delta (`+0.25`, `-0.50`); an undefined mean prints
+`mean latency ·`. Threads are listed in the order they appear in the cases file, and a thread with
+a prefix that errored is left out of every count. In JSON the noul gains:
 
 ```json
 "latency": {
@@ -677,7 +685,7 @@ is exactly 1 or -1) is 1; an undefined mean prints `mean latency ·`. In JSON th
 }
 ```
 
-`expected` is null for a `by_turn: null` thread, `detected` and `latency` null when nothing was
+The key goes after `sweep`. `expected` is null for a `by_turn: null` thread, `detected` and `latency` null when nothing was
 detected. `latency` is present only when the question has at least one per-turn thread.
 
 ## Out of scope, on purpose
