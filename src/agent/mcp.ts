@@ -195,6 +195,12 @@ export const TOOLS: readonly Tool[] = [
           description: "How many cases are in the air at once. Defaults to 4.",
           minimum: 1,
         },
+        compare: {
+          type: "string",
+          description:
+            "A second page to run over the same cases. The report becomes the difference: " +
+            "deltas per question, the cases whose answer flipped, and an exact McNemar test.",
+        },
         json: { type: "boolean", description: "Return the report as JSON instead of a table." },
       },
       required: ["page", "cases"],
@@ -323,10 +329,6 @@ async function ask(args: JsonObject, host: Host): Promise<Result> {
 
 async function score(args: JsonObject, host: Host): Promise<Result> {
   const { session, model } = sessionArg(args, host);
-  const parsed = evaluate.parseCases(stringArg(args, "cases"), session);
-  if (!parsed.ok) throw new ArgumentError(parsed.error);
-  const cases = parsed.value;
-  if (cases.length === 0) throw new ArgumentError("cases is empty: nothing to score.");
   const threshold = numberArg(args, "threshold", 0.5);
   if (threshold < 0 || threshold > 1) throw new ArgumentError("threshold must be from 0 to 1.");
   const concurrency = numberArg(args, "concurrency", 4);
@@ -334,11 +336,55 @@ async function score(args: JsonObject, host: Host): Promise<Result> {
     throw new ArgumentError("concurrency must be a whole number of 1 or more.");
   }
   const rates = ratesArg(args, host);
+  const second = args["compare"];
+  if (second !== undefined && second !== null) {
+    return compared(args, host, session, model, threshold, concurrency, rates);
+  }
+
+  const parsed = evaluate.parseCases(stringArg(args, "cases"), session);
+  if (!parsed.ok) throw new ArgumentError(parsed.error);
+  const cases = parsed.value;
+  if (cases.length === 0) throw new ArgumentError("cases is empty: nothing to score.");
 
   const outcomes = await evaluate.run(session, cases, (one) => host.ask(one), concurrency);
   const report = evaluate.report(session, cases, outcomes, { model, threshold, rates });
   if (boolArg(args, "json", false)) return text(`${pretty(evaluate.reportJson(report))}\n`);
   const body = `${linesText(evaluate.reportLines(report))}\n`;
+  return text(host.live ? body : body + SIMULATED);
+}
+
+/** `jev_eval` with `compare`: both pages over the same cases, labelled `a` and `b`. */
+async function compared(
+  args: JsonObject,
+  host: Host,
+  a: Session,
+  modelA: string,
+  threshold: number,
+  concurrency: number,
+  rates: cost.Rates | undefined,
+): Promise<Result> {
+  const loaded = headless.load(stringArg(args, "compare"));
+  if (!loaded.ok) throw new ArgumentError(`compare: ${loaded.error}`);
+  const b = loaded.value;
+  // A model named in the call overrides both pages, the way --model does on the command line.
+  if (typeof args["model"] === "string") b.model = args["model"];
+  const modelB = b.model ?? host.model;
+  const parsed = evaluate.parseCompareCases(stringArg(args, "cases"), a, b, { a: "a", b: "b" });
+  if (!parsed.ok) throw new ArgumentError(parsed.error);
+  const [casesA, casesB] = parsed.value;
+  const ask = (one: Session): Promise<evaluate.Outcome> => host.ask(one);
+  const [outcomesA, outcomesB] = await evaluate.runCompare(
+    { session: a, cases: casesA, ask },
+    { session: b, cases: casesB, ask },
+    concurrency,
+  );
+  const comparison = evaluate.compare(
+    { label: "a", session: a, cases: casesA, outcomes: outcomesA, model: modelA },
+    { label: "b", session: b, cases: casesB, outcomes: outcomesB, model: modelB },
+    { threshold, rates },
+  );
+  if (boolArg(args, "json", false)) return text(`${pretty(evaluate.compareJson(comparison))}\n`);
+  const body = `${linesText(evaluate.compareLines(comparison))}\n`;
   return text(host.live ? body : body + SIMULATED);
 }
 

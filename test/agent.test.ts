@@ -232,6 +232,26 @@ describe("the tools", () => {
     expect(report["errors"]).toEqual([]);
   });
 
+  it("compares two pages over the same cases", async () => {
+    const cases = [
+      '{"state": "My card was declined", "expect": {"department": "billing", "tone": true}}',
+      '{"state": "The webhook returns 500", "expect": {"department": "technical"}}',
+    ].join("\n");
+    const other = `${PAGE}tone? The customer is polite\n`;
+    const json = await callTool("jev_eval", { page: PAGE, compare: other, cases, json: true });
+    expect(json.isError).toBe(false);
+    const report = JSON.parse(json.text) as JsonObject;
+    expect(Object.keys(report["questions"] as JsonObject)).toEqual(["department"]);
+    expect(report["onlyB"]).toEqual(["tone"]);
+    expect(report["unpaired"]).toEqual([]);
+    const table = await callTool("jev_eval", { page: PAGE, compare: other, cases });
+    expect(table.text).toContain("McNemar");
+    expect(table.text).toContain("Simulated answers");
+    const broken = await callTool("jev_eval", { page: PAGE, compare: "nothing here", cases });
+    expect(broken.isError).toBe(true);
+    expect(broken.text).toContain("compare:");
+  });
+
   it("says which line of the cases file it could not read", async () => {
     const { text, isError } = await callTool("jev_eval", { page: PAGE, cases: "{oops}" });
     expect(isError).toBe(true);

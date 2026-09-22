@@ -568,3 +568,268 @@ describe("the preflight", () => {
     expect(one.cost).toBeUndefined();
   });
 });
+
+// ---- two pages over the same cases ------------------------------------------------------------
+
+/** The candidate: the same noul and choice, a score renamed away, a noul of its own added. */
+const PAGE_B = `A payout failed for the third time.
+---
+is_urgent? The message conveys urgency or time pressure
+department: Which team should handle this
+  billing = Payment or subscription issues
+  technical = Bugs or integration problems
+  sales = Pricing and plans
+frustration? Is the customer frustrated
+sarcasm? Is the customer being sarcastic
+`;
+
+function sessionB(): Session {
+  const loaded = headless.load(PAGE_B);
+  if (!loaded.ok) throw new Error(loaded.error);
+  return loaded.value;
+}
+
+const LABELS = { a: "a.jev", b: "b.jev" };
+
+describe("cases for two pages", () => {
+  it("gives each page the expectations for its own questions", () => {
+    const parsed = evaluate.parseCompareCases(
+      [
+        '{"state": "one", "expect": {"is_urgent": true, "sarcasm": false}}',
+        '{"state": "two", "expect": {"sarcasm": true}}',
+      ].join("\n"),
+      session(),
+      sessionB(),
+      LABELS,
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    const [a, b] = parsed.value;
+    // The second case asks nothing of page a, so page a does not send it.
+    expect(a.map((c) => c.line)).toEqual([1]);
+    expect(Object.keys(a[0]?.expect ?? {})).toEqual(["is_urgent"]);
+    expect(b.map((c) => c.line)).toEqual([1, 2]);
+    expect(Object.keys(b[0]?.expect ?? {})).toEqual(["is_urgent", "sarcasm"]);
+  });
+
+  it("names a question on neither page, and the page a label does not fit", () => {
+    const why2 = (line: string): string => {
+      const parsed = evaluate.parseCompareCases(line, session(), sessionB(), LABELS);
+      if (parsed.ok) throw new Error("expected these cases to be rejected");
+      return parsed.error;
+    };
+    expect(why2('{"state": "a", "expect": {"nope": true}}')).toBe(
+      'cases line 1: no question named "nope" on either page.',
+    );
+    // frustration is a score on page a and a noul on page b: `2` only fits one of them.
+    expect(why2('{"state": "a", "expect": {"frustration": 2}}')).toBe(
+      "cases line 1: b.jev: frustration is a noul: expected true or false, got 2.",
+    );
+    expect(why2("\nnot json")).toMatch(/^cases line 2: not valid JSON/);
+  });
+});
+
+describe("the exact McNemar test", () => {
+  it("is a binomial tail over the discordant pairs", () => {
+    expect(evaluate.mcnemar(0, 6)).toEqual({
+      discordant: 6,
+      p: expect.closeTo(2 / 64, 12),
+      verdict: "worse",
+    });
+    expect(evaluate.mcnemar(6, 0).verdict).toBe("better");
+    const one = evaluate.mcnemar(1, 5);
+    expect(one.p).toBeCloseTo(14 / 64, 12);
+    expect(one.verdict).toBe("same");
+  });
+
+  it("says too few below six pairs, where no p can reach 0.05", () => {
+    expect(evaluate.mcnemar(0, 5)).toEqual({
+      discordant: 5,
+      p: expect.closeTo(2 / 32, 12),
+      verdict: "too few",
+    });
+    expect(evaluate.mcnemar(0, 0)).toEqual({ discordant: 0, p: 1, verdict: "too few" });
+  });
+
+  it("stays a number when 2^n is not one", () => {
+    const test = evaluate.mcnemar(1500, 1600);
+    expect(Number.isFinite(test.p)).toBe(true);
+    expect(test.p).toBeGreaterThan(0.05);
+    expect(test.p).toBeLessThan(1);
+    expect(evaluate.mcnemar(1000, 1400).verdict).toBe("worse");
+  });
+});
+
+describe("comparing two pages", () => {
+  const lines = [
+    '{"id": "t-1", "state": "one", "expect": {"is_urgent": true, "department": "billing"}}',
+    '{"state": "two", "expect": {"is_urgent": false, "department": "technical"}}',
+    '{"state": "three", "expect": {"is_urgent": true, "department": "sales"}}',
+    '{"state": "four", "expect": {"is_urgent": false, "sarcasm": true}}',
+  ];
+  const a = session();
+  const b = sessionB();
+  const parsed = evaluate.parseCompareCases(lines.join("\n"), a, b, LABELS);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const [casesA, casesB] = parsed.value;
+  const outcomesA = [
+    answered({ is_urgent: noul(0.9), department: choice("billing", 0.9) }),
+    answered({ is_urgent: noul(0.8), department: choice("billing", 0.6) }),
+    answered({ is_urgent: noul(0.2), department: choice("billing", 0.5) }),
+    answered({ is_urgent: noul(0.1) }),
+  ];
+  const outcomesB: evaluate.Outcome[] = [
+    // Broke: a said yes and was right, b says no.
+    answered({ is_urgent: noul(0.3), department: choice("billing", 0.9) }),
+    // Fixed both: a was wrong on both questions, b is right.
+    answered({ is_urgent: noul(0.1), department: choice("technical", 0.8) }),
+    // Changed: a and b both pick a wrong department, a different one each.
+    answered({ is_urgent: noul(0.2), department: choice("technical", 0.7) }),
+    { ok: false, error: "Timeout" },
+  ];
+  const comparison = evaluate.compare(
+    { label: "a.jev", session: a, cases: casesA, outcomes: outcomesA, model: "jev-latest" },
+    { label: "b.jev", session: b, cases: casesB, outcomes: outcomesB, model: "jev-2" },
+    { threshold: 0.5, rates: undefined },
+  );
+
+  it("pairs only the cases both pages scored", () => {
+    const urgent = comparison.questions.find((q) => q.name === "is_urgent");
+    expect(urgent?.paired).toBe(3);
+    expect(urgent?.metrics.map((m) => [m.key, m.a, m.b])).toEqual([
+      ["threshold", 0.5, 0.5],
+      ["brier", expect.closeTo((0.01 + 0.64 + 0.64) / 3, 12), expect.closeTo(1.14 / 3, 12)],
+      ["accuracy", 1 / 3, 1 / 3],
+      ["f1", 0.5, 0],
+    ]);
+  });
+
+  it("calls each flip fixed, broke or changed", () => {
+    const urgent = comparison.questions.find((q) => q.name === "is_urgent");
+    expect(urgent?.flips).toEqual([
+      { case: 1, id: "t-1", expected: true, a: true, b: false, status: "broke" },
+      { case: 2, expected: false, a: true, b: false, status: "fixed" },
+    ]);
+    const department = comparison.questions.find((q) => q.name === "department");
+    expect(department).toMatchObject({ fixed: 1, broke: 0, changed: 1 });
+    expect(department?.mcnemar.verdict).toBe("too few");
+  });
+
+  it("lists what could not be compared", () => {
+    expect(comparison.questions.map((q) => q.name)).toEqual(["is_urgent", "department"]);
+    expect(comparison.onlyA).toEqual([]);
+    expect(comparison.onlyB).toEqual(["sarcasm"]);
+    expect(comparison.mismatched).toEqual([{ name: "frustration", a: "score", b: "noul" }]);
+    expect(comparison.cases).toBe(4);
+    expect(comparison.b.report.errors).toEqual([{ case: 4, message: "Timeout" }]);
+  });
+
+  it("draws the difference, and says what the test can and cannot tell", () => {
+    const text = linesText(evaluate.compareLines(comparison));
+    expect(text).toContain("  a  a.jev  jev-latest · 4 cases");
+    expect(text).toContain("  b  b.jev  jev-2 · 4 cases");
+    expect(text).toMatch(/is_urgent\s+noul\s+3 paired cases/);
+    expect(text).toMatch(/accuracy\s+0\.33\s+0\.33\s+\+0\.00/);
+    expect(text).toMatch(/f1\s+0\.50\s+0\.00\s+-0\.50/);
+    expect(text).toContain("1 fixed · 1 broke · 0 changed");
+    expect(text).toContain(
+      "McNemar: too few discordant pairs to call (2; 6 are needed for p < 0.05)",
+    );
+    expect(text).toMatch(/case 1 \(t-1\)\s+yes → no\s+broke/);
+    expect(text).toMatch(/case 3\s+billing → technical\s+changed/);
+    expect(text).toContain("only in b: sarcasm");
+    expect(text).toContain("mismatched: frustration is a score in a and a noul in b");
+    expect(text).toContain("b case 4: Timeout");
+    expect(text).toContain("4 cases · a 4 answered, 0 errors · b 3 answered, 1 error");
+  });
+
+  it("prints the JSON a script reads", () => {
+    const json = evaluate.compareJson(comparison) as Record<string, Json>;
+    expect(json).toMatchObject({
+      a: { page: "a.jev", model: "jev-latest", cases: 4 },
+      b: { page: "b.jev", model: "jev-2", answered: 3 },
+      questions: {
+        is_urgent: {
+          kind: "noul",
+          paired: 3,
+          a: { threshold: 0.5, accuracy: 1 / 3, f1: 0.5 },
+          b: { threshold: 0.5, accuracy: 1 / 3, f1: 0 },
+          delta: { accuracy: 0, f1: -0.5 },
+          fixed: 1,
+          broke: 1,
+          changed: 0,
+          mcnemar: { discordant: 2, p: 1, verdict: "too few" },
+        },
+        department: { kind: "choice", a: { accuracy: 1 / 3 }, b: { accuracy: 2 / 3 } },
+      },
+      onlyA: [],
+      onlyB: ["sarcasm"],
+      mismatched: [{ name: "frustration", a: "score", b: "noul" }],
+      unpaired: [],
+      regressions: [],
+      usage: { estimated: true },
+    });
+    const delta = (json["questions"] as Record<string, Record<string, Json>>)["is_urgent"]?.[
+      "delta"
+    ];
+    expect(Object.keys(delta as Record<string, Json>)).toEqual(["brier", "accuracy", "f1"]);
+    expect(JSON.parse(JSON.stringify(json))).toEqual(json);
+  });
+
+  it("names the questions b is significantly worse at", () => {
+    const many = Array.from(
+      { length: 8 },
+      (_, i) => `{"state": "s${i}", "expect": {"is_urgent": true}}`,
+    );
+    const both = evaluate.parseCompareCases(many.join("\n"), a, b, LABELS);
+    if (!both.ok) throw new Error(both.error);
+    const [left, right] = both.value;
+    const worse = evaluate.compare(
+      {
+        label: "a",
+        session: a,
+        cases: left,
+        outcomes: left.map(() => answered({ is_urgent: noul(0.9) })),
+        model: "m",
+      },
+      {
+        label: "b",
+        session: b,
+        cases: right,
+        outcomes: right.map(() => answered({ is_urgent: noul(0.1) })),
+        model: "m",
+      },
+      { threshold: 0.5, rates: undefined },
+    );
+    expect(evaluate.regressions(worse).map((q) => q.name)).toEqual(["is_urgent"]);
+    expect(linesText(evaluate.compareLines(worse))).toContain(
+      "McNemar p 0.008 over 8 discordant pairs: b is significantly worse",
+    );
+  });
+
+  it("runs both pages through one pool, and hands each its outcomes in order", async () => {
+    let flying = 0;
+    let most = 0;
+    const ask =
+      (tag: string) =>
+      async (one: Session): Promise<evaluate.Outcome> => {
+        flying += 1;
+        most = Math.max(most, flying);
+        await new Promise((done) => setTimeout(done, 3));
+        flying -= 1;
+        return { ok: false, error: `${tag}:${String(one.state)}` };
+      };
+    const [left, right] = await evaluate.runCompare(
+      { session: a, cases: casesA, ask: ask("a") },
+      { session: b, cases: casesB, ask: ask("b") },
+      3,
+    );
+    expect(most).toBe(3);
+    expect(left.map((o) => (o.ok ? "" : o.error))).toEqual(["a:one", "a:two", "a:three", "a:four"]);
+    expect(right.map((o) => (o.ok ? "" : o.error))).toEqual([
+      "b:one",
+      "b:two",
+      "b:three",
+      "b:four",
+    ]);
+  });
+});

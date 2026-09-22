@@ -27,7 +27,7 @@ import type { Line } from "../tui/style.js";
 import { blankLine, line, linesText, span } from "../tui/style.js";
 import type { Cost, Rates } from "./cost.js";
 import * as cost from "./cost.js";
-import { BAD, bold, CHOICE, colorFor, dim, errorLines } from "./format.js";
+import { BAD, bold, CHOICE, colorFor, DIM, dim, errorLines, SCORE } from "./format.js";
 import type { Answered } from "./headless.js";
 import type { Parsed, Session } from "./session.js";
 
@@ -59,19 +59,98 @@ const err = <T>(error: string): Parsed<T> => ({ ok: false, error });
  */
 export function parseCases(text: string, session: Session): Parsed<Case[]> {
   const cases: Case[] = [];
+  const failed = readCases(text, (one) => {
+    const expect: Record<string, Expectation> = {};
+    for (const [name, value] of Object.entries(one.wanted)) {
+      const question = questionOf(session, name);
+      if (question === undefined) return `no question named ${JSON.stringify(name)} on the page.`;
+      const expectation = expected(name, question, value);
+      if (!expectation.ok) return expectation.error;
+      expect[name] = expectation.value;
+    }
+    cases.push(caseOf(one, expect));
+    return undefined;
+  });
+  return failed === undefined ? ok(cases) : err(failed);
+}
+
+/** What the two pages of a comparison are called in its messages and its report. */
+export interface Labels {
+  readonly a: string;
+  readonly b: string;
+}
+
+/**
+ * Parse one cases file for two pages at once: a case per page, each holding the expectations for
+ * that page's questions.
+ *
+ * A label may name a question on either page, which is what lets a page that adds a question be
+ * compared with one that does not. It is still checked against every page that has the question —
+ * a case one page cannot even express is not a paired observation, it is a typo.
+ */
+export function parseCompareCases(
+  text: string,
+  a: Session,
+  b: Session,
+  labels: Labels,
+): Parsed<[Case[], Case[]]> {
+  const left: Case[] = [];
+  const right: Case[] = [];
+  const failed = readCases(text, (one) => {
+    const expectA: Record<string, Expectation> = {};
+    const expectB: Record<string, Expectation> = {};
+    for (const [name, value] of Object.entries(one.wanted)) {
+      const onA = questionOf(a, name);
+      const onB = questionOf(b, name);
+      if (onA === undefined && onB === undefined) {
+        return `no question named ${JSON.stringify(name)} on either page.`;
+      }
+      const sides = [
+        [onA, expectA, labels.a],
+        [onB, expectB, labels.b],
+      ] as const;
+      for (const [question, into, label] of sides) {
+        if (question === undefined) continue;
+        const expectation = expected(name, question, value);
+        if (!expectation.ok) return `${label}: ${expectation.error}`;
+        into[name] = expectation.value;
+      }
+    }
+    if (Object.keys(expectA).length > 0) left.push(caseOf(one, expectA));
+    if (Object.keys(expectB).length > 0) right.push(caseOf(one, expectB));
+    return undefined;
+  });
+  return failed === undefined ? ok([left, right]) : err(failed);
+}
+
+/** A line of the cases file that is a case in shape, before its labels meet a page. */
+interface RawCase {
+  readonly line: number;
+  readonly id?: string;
+  readonly state: Json;
+  readonly wanted: JsonObject;
+}
+
+/**
+ * Hand every non-blank line to `visit` as a case, stopping at the first line that is not one or
+ * that `visit` refuses; the message that comes back already names the line.
+ */
+function readCases(text: string, visit: (one: RawCase) => string | undefined): string | undefined {
   const lines = text.split("\n");
+  let seen = 0;
   for (let i = 0; i < lines.length; i++) {
     const raw = (lines[i] as string).trim();
     if (raw === "") continue;
-    const parsed = parseCase(raw, i + 1, session);
-    if (!parsed.ok) return err(`cases line ${i + 1}: ${parsed.error}`);
-    cases.push(parsed.value);
+    const parsed = readCase(raw, i + 1);
+    if (!parsed.ok) return `cases line ${i + 1}: ${parsed.error}`;
+    const refused = visit(parsed.value);
+    if (refused !== undefined) return `cases line ${i + 1}: ${refused}`;
+    seen += 1;
   }
-  if (cases.length === 0) return err("the cases file holds no cases.");
-  return ok(cases);
+  return seen === 0 ? "the cases file holds no cases." : undefined;
 }
 
-function parseCase(text: string, line: number, session: Session): Parsed<Case> {
+function readCase(text: string, line: number): Parsed<RawCase> {
   const value = tryParse(text);
   if (value === undefined) return err(`not valid JSON: ${parseError(text)}`);
   if (!isObject(value)) return err("expected a JSON object with `state` and `expect`.");
@@ -88,18 +167,17 @@ function parseCase(text: string, line: number, session: Session): Parsed<Case> {
   if (!isObject(wanted) || Object.keys(wanted).length === 0) {
     return err("`expect` has to name at least one question.");
   }
+  return ok(id === undefined ? { line, state, wanted } : { line, id, state, wanted });
+}
 
-  const expect: Record<string, Expectation> = {};
-  for (const [name, value] of Object.entries(wanted)) {
-    const question = session.questions.find(([n]) => n === name)?.[1];
-    if (question === undefined) {
-      return err(`no question named ${JSON.stringify(name)} on the page.`);
-    }
-    const expectation = expected(name, question, value);
-    if (!expectation.ok) return expectation;
-    expect[name] = expectation.value;
-  }
-  return ok(id === undefined ? { line, state, expect } : { line, id, state, expect });
+function caseOf(one: RawCase, expect: Record<string, Expectation>): Case {
+  return one.id === undefined
+    ? { line: one.line, state: one.state, expect }
+    : { line: one.line, id: one.id, state: one.state, expect };
+}
+
+function questionOf(session: Session, name: string): Question | undefined {
+  return session.questions.find(([n]) => n === name)?.[1];
 }
 
 /** Check one expected value against the question it names, and store it the way it is scored. */
@@ -151,28 +229,61 @@ export type Outcome =
  * up nothing but itself, and a case that throws is recorded and stepped over: a file of a thousand
  * labels should not be lost to one timeout.
  */
-export function run(
+export async function run(
   session: Session,
   cases: readonly Case[],
   ask: (session: Session) => Promise<Outcome>,
   concurrency: number,
 ): Promise<Outcome[]> {
-  const outcomes: Outcome[] = new Array<Outcome>(cases.length);
+  const [outcomes] = await runLegs([{ session, cases, ask }], concurrency);
+  return outcomes ?? [];
+}
+
+/** One page's share of a comparison: its session, its cases, and how to ask it. */
+export interface Leg {
+  readonly session: Session;
+  readonly cases: readonly Case[];
+  readonly ask: (session: Session) => Promise<Outcome>;
+}
+
+/**
+ * Both pages of a comparison through one pool of workers: page `a`'s cases first, then `b`'s.
+ *
+ * One pool rather than one per page, so `--concurrency` still means what it says — that many
+ * requests in the air, whichever page they are for.
+ */
+export async function runCompare(
+  a: Leg,
+  b: Leg,
+  concurrency: number,
+): Promise<[Outcome[], Outcome[]]> {
+  const [left, right] = await runLegs([a, b], concurrency);
+  return [left ?? [], right ?? []];
+}
+
+async function runLegs(legs: readonly Leg[], concurrency: number): Promise<Outcome[][]> {
+  const outcomes = legs.map((leg) => new Array<Outcome>(leg.cases.length));
+  const jobs: Array<[leg: number, at: number]> = [];
+  legs.forEach((leg, l) => leg.cases.forEach((_, at) => jobs.push([l, at])));
   let next = 0;
   const worker = async (): Promise<void> => {
     for (;;) {
-      const at = next++;
-      const one = cases[at];
-      if (one === undefined) return;
+      const job = jobs[next++];
+      if (job === undefined) return;
+      const [l, at] = job;
+      const leg = legs[l] as Leg;
+      const one = leg.cases[at] as Case;
+      const into = outcomes[l] as Outcome[];
       try {
-        outcomes[at] = await ask(withState(session, one.state));
+        into[at] = await leg.ask(withState(leg.session, one.state));
       } catch (e) {
-        outcomes[at] = { ok: false, error: linesText(errorLines(e)).trim() };
+        into[at] = { ok: false, error: linesText(errorLines(e)).trim() };
       }
     }
   };
-  const workers = Math.max(1, Math.min(Math.floor(concurrency), cases.length));
-  return Promise.all(Array.from({ length: workers }, () => worker())).then(() => outcomes);
+  const workers = Math.max(1, Math.min(Math.floor(concurrency), jobs.length));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return outcomes;
 }
 
 /** One row of a noul's threshold sweep: the confusion counts, and what they come to. */
@@ -268,6 +379,8 @@ const CUTS = [0, 0.2, 0.4, 0.6, 0.8];
 
 /** One case that answered everything it was labelled for. */
 interface Scored {
+  readonly line: number;
+  readonly id: string | undefined;
   readonly expect: Readonly<Record<string, Expectation>>;
   readonly answers: ReadonlyMap<string, Answer>;
   readonly usage: Usage | undefined;
@@ -285,6 +398,32 @@ export function report(
   outcomes: readonly Outcome[],
   options: { model: string; threshold: number; rates: Rates | undefined },
 ): Report {
+  const { errors, scored } = scoredOf(cases, outcomes);
+  const questions: QuestionReport[] = [];
+  for (const [name, question] of session.questions) {
+    const rows = scored.filter((one) => one.expect[name] !== undefined);
+    if (rows.length === 0) continue;
+    if (question.kind === "noul") questions.push(noulReport(name, rows, options.threshold));
+    else if (question.kind === "choice") questions.push(choiceReport(name, question, rows));
+    else if (question.kind === "score") questions.push(scoreReport(name, rows));
+  }
+
+  return {
+    model: options.model,
+    threshold: options.threshold,
+    cases: cases.length,
+    answered: scored.length,
+    errors,
+    questions,
+    usage: usageOf(session, cases, scored, options.model, options.rates),
+  };
+}
+
+/** Split the outcomes into the cases that can be scored and the ones that are errors. */
+function scoredOf(
+  cases: readonly Case[],
+  outcomes: readonly Outcome[],
+): { errors: CaseError[]; scored: Scored[] } {
   const errors: CaseError[] = [];
   const scored: Scored[] = [];
   cases.forEach((one, at) => {
@@ -307,27 +446,15 @@ export function report(
         return failed(`${name} came back as a ${answer.type}, not a ${expectation.kind}`);
       }
     }
-    scored.push({ expect: one.expect, answers, usage: outcome.usage });
+    scored.push({
+      line: one.line,
+      id: one.id,
+      expect: one.expect,
+      answers,
+      usage: outcome.usage,
+    });
   });
-
-  const questions: QuestionReport[] = [];
-  for (const [name, question] of session.questions) {
-    const rows = scored.filter((one) => one.expect[name] !== undefined);
-    if (rows.length === 0) continue;
-    if (question.kind === "noul") questions.push(noulReport(name, rows, options.threshold));
-    else if (question.kind === "choice") questions.push(choiceReport(name, question, rows));
-    else if (question.kind === "score") questions.push(scoreReport(name, rows));
-  }
-
-  return {
-    model: options.model,
-    threshold: options.threshold,
-    cases: cases.length,
-    answered: scored.length,
-    errors,
-    questions,
-    usage: usageOf(session, cases, scored, options.model, options.rates),
-  };
+  return { errors, scored };
 }
 
 /** The accuracy `--min-accuracy` holds a question to: exact agreement at the chosen threshold. */
@@ -660,8 +787,8 @@ function confusionLines(question: ChoiceReport): Line[] {
   return out;
 }
 
-function errorCaseLines(failed: CaseError): Line[] {
-  const name = `case ${failed.case}${failed.id === undefined ? "" : ` (${failed.id})`}`;
+function errorCaseLines(failed: CaseError, prefix = ""): Line[] {
+  const name = `${prefix}${caseName(failed.case, failed.id)}`;
   const [first, ...rest] = failed.message.split("\n");
   const out: Line[] = [
     line([span("  "), span(`${name}: `, { fg: BAD }), span((first ?? "").trim())]),
@@ -783,4 +910,563 @@ function rate(n: number | undefined): string {
 function padEnd(text: string, width: number): string {
   const length = [...text].length;
   return length >= width ? text : text + " ".repeat(width - length);
+}
+
+// ---- two pages over the same cases ----------------------------------------------------------
+
+/** One page's run, as a comparison needs it. */
+export interface Side {
+  /** What the page is called: the path it was read from. */
+  readonly label: string;
+  readonly session: Session;
+  readonly cases: readonly Case[];
+  readonly outcomes: readonly Outcome[];
+  readonly model: string;
+}
+
+/** What the exact McNemar test made of the discordant pairs. */
+export type Verdict = "too few" | "better" | "worse" | "same";
+
+export interface McNemar {
+  /** Cases one page got right and the other wrong: `fixed + broke`. */
+  readonly discordant: number;
+  /** Two-sided exact p-value; 1 when there is nothing to test. */
+  readonly p: number;
+  readonly verdict: Verdict;
+}
+
+/** A case the two pages answered differently. */
+export interface Flip {
+  readonly case: number;
+  readonly id?: string;
+  /** What the case expects, and what each page predicted, in the question's own terms. */
+  readonly expected: Json;
+  readonly a: Json;
+  readonly b: Json;
+  /** `fixed`: `b` put right what `a` got wrong. `broke`: the reverse. `changed`: both wrong. */
+  readonly status: "fixed" | "broke" | "changed";
+}
+
+/** One metric on both sides, and what moved. */
+export interface Metric {
+  /** The JSON key. */
+  readonly key: string;
+  /** The row name in the text report. */
+  readonly label: string;
+  readonly a: number;
+  readonly b: number;
+  /** Whether a delta means anything: a threshold is a setting, not a result. */
+  readonly delta: boolean;
+}
+
+/** A question both pages ask the same way, measured on the cases both pages scored. */
+export interface Shared {
+  readonly name: string;
+  readonly kind: "noul" | "choice" | "score";
+  readonly paired: number;
+  readonly metrics: readonly Metric[];
+  readonly fixed: number;
+  readonly broke: number;
+  readonly changed: number;
+  readonly mcnemar: McNemar;
+  readonly flips: readonly Flip[];
+}
+
+/** Everything a comparison found, with the numbers unrounded. */
+export interface Comparison {
+  readonly a: { readonly label: string; readonly report: Report };
+  readonly b: { readonly label: string; readonly report: Report };
+  readonly questions: readonly Shared[];
+  readonly onlyA: readonly string[];
+  readonly onlyB: readonly string[];
+  readonly mismatched: ReadonlyArray<{ name: string; a: string; b: string }>;
+  readonly unpaired: readonly string[];
+  /** Distinct cases across both pages. */
+  readonly cases: number;
+  readonly usage: ReportUsage;
+}
+
+/** The level McNemar's test is read at. Not a flag: a comparison should mean the same everywhere. */
+export const ALPHA = 0.05;
+
+/** Below this many discordant pairs no two-sided exact p can reach {@link ALPHA}: 2 / 2^5 > 0.05. */
+export const MIN_DISCORDANT = 6;
+
+/**
+ * The exact McNemar test on the discordant pairs of a paired comparison.
+ *
+ * Under "no difference" each discordant pair is a fair coin, so the p-value is a binomial tail.
+ * It is summed in log space because `2^n` stops being a number long before a cases file stops
+ * being a reasonable size.
+ */
+export function mcnemar(fixed: number, broke: number): McNemar {
+  const n = fixed + broke;
+  let p = 1;
+  if (n > 0) {
+    const low = Math.min(fixed, broke);
+    const ln2n = n * Math.LN2;
+    let lnChoose = 0;
+    let tail = Math.exp(-ln2n);
+    for (let k = 1; k <= low; k++) {
+      lnChoose += Math.log(n - k + 1) - Math.log(k);
+      tail += Math.exp(lnChoose - ln2n);
+    }
+    p = Math.min(1, 2 * tail);
+  }
+  const verdict: Verdict =
+    n < MIN_DISCORDANT
+      ? "too few"
+      : p < ALPHA && fixed > broke
+        ? "better"
+        : p < ALPHA && broke > fixed
+          ? "worse"
+          : "same";
+  return { discordant: n, p, verdict };
+}
+
+/**
+ * Put two runs of the same cases side by side.
+ *
+ * Only the cases both pages scored count, so each delta is measured on the same states: a page
+ * that errored on the hard cases must not look better for it. The full reports, over everything
+ * each page scored, travel along for the JSON.
+ */
+export function compare(
+  a: Side,
+  b: Side,
+  options: { threshold: number; rates: Rates | undefined },
+): Comparison {
+  const reportOf = (side: Side): Report =>
+    report(side.session, side.cases, side.outcomes, {
+      model: side.model,
+      threshold: options.threshold,
+      rates: options.rates,
+    });
+  const left = scoredOf(a.cases, a.outcomes).scored;
+  const right = new Map(scoredOf(b.cases, b.outcomes).scored.map((one) => [keyOf(one), one]));
+
+  const kindsB = new Map(b.session.questions.map(([name, q]) => [name, q.kind] as const));
+  const namesA = new Set(a.session.questions.map(([name]) => name));
+  const questions: Shared[] = [];
+  const mismatched: Array<{ name: string; a: string; b: string }> = [];
+  const unpaired: string[] = [];
+  for (const [name, question] of a.session.questions) {
+    const other = kindsB.get(name);
+    if (other === undefined) continue;
+    if (other !== question.kind || question.kind === "raw") {
+      if (other !== question.kind) mismatched.push({ name, a: question.kind, b: other });
+      continue;
+    }
+    const pairs: Array<[Scored, Scored]> = [];
+    for (const one of left) {
+      const twin = right.get(keyOf(one));
+      if (one.expect[name] !== undefined && twin?.expect[name] !== undefined) {
+        pairs.push([one, twin]);
+      }
+    }
+    if (pairs.length === 0) {
+      // A question nobody labelled is left out, as eval leaves it out; one that was labelled and
+      // still has no pair is worth saying so about.
+      const labelled = [...a.cases, ...b.cases].some((one) => one.expect[name] !== undefined);
+      if (labelled) unpaired.push(name);
+      continue;
+    }
+    questions.push(shared(name, question.kind, pairs, options.threshold, options.threshold));
+  }
+
+  const keys = new Set([...a.cases, ...b.cases].map((one) => keyOf(one)));
+  const reportA = reportOf(a);
+  const reportB = reportOf(b);
+  return {
+    a: { label: a.label, report: reportA },
+    b: { label: b.label, report: reportB },
+    questions,
+    onlyA: a.session.questions.map(([name]) => name).filter((name) => !kindsB.has(name)),
+    onlyB: b.session.questions.map(([name]) => name).filter((name) => !namesA.has(name)),
+    mismatched,
+    unpaired,
+    cases: keys.size,
+    usage: sumUsage(reportA.usage, reportB.usage, options.rates),
+  };
+}
+
+/** Which case a scored row came from, so the same case can be found on the other page. */
+function keyOf(one: { readonly line: number }): string {
+  return String(one.line);
+}
+
+function sumUsage(a: ReportUsage, b: ReportUsage, rates: Rates | undefined): ReportUsage {
+  const inputTokens = a.inputTokens + b.inputTokens;
+  const outputTokens = a.outputTokens + b.outputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    estimated: a.estimated || b.estimated,
+    cost: rates === undefined ? undefined : cost.price(inputTokens, outputTokens, rates),
+  };
+}
+
+/** One paired observation: what each side predicted, and whether it was right. */
+interface Pair {
+  readonly one: Scored;
+  readonly expected: Json;
+  readonly a: Json;
+  readonly b: Json;
+  readonly rightA: boolean;
+  readonly rightB: boolean;
+}
+
+function shared(
+  name: string,
+  kind: "noul" | "choice" | "score",
+  pairs: ReadonlyArray<[Scored, Scored]>,
+  thresholdA: number,
+  thresholdB: number,
+): Shared {
+  let metrics: Metric[];
+  let observed: Pair[];
+  if (kind === "noul") {
+    const points = (side: 0 | 1): Array<{ p: number; yes: boolean }> =>
+      pairs.map((pair) => ({
+        p: (pair[side].answers.get(name) as NoulAnswer).noul,
+        yes: (pair[side].expect[name] as Extract<Expectation, { kind: "noul" }>).yes,
+      }));
+    const left = points(0);
+    const right = points(1);
+    const brier = (list: typeof left): number =>
+      mean(list.map(({ p, yes }) => (p - (yes ? 1 : 0)) ** 2));
+    const rowA = sweepRow(left, thresholdA);
+    const rowB = sweepRow(right, thresholdB);
+    metrics = [
+      { key: "threshold", label: "threshold", a: thresholdA, b: thresholdB, delta: false },
+      { key: "brier", label: "brier", a: brier(left), b: brier(right), delta: true },
+      { key: "accuracy", label: "accuracy", a: rowA.accuracy, b: rowB.accuracy, delta: true },
+      { key: "f1", label: "f1", a: rowA.f1, b: rowB.f1, delta: true },
+    ];
+    observed = pairs.map(([one], at) => {
+      const yes = (left[at] as { yes: boolean }).yes;
+      const predA = (left[at] as { p: number }).p >= thresholdA;
+      const predB = (right[at] as { p: number }).p >= thresholdB;
+      return {
+        one,
+        expected: yes,
+        a: predA,
+        b: predB,
+        rightA: predA === yes,
+        rightB: predB === yes,
+      };
+    });
+  } else if (kind === "choice") {
+    observed = pairs.map(([one, twin]) => {
+      const expected = (one.expect[name] as Extract<Expectation, { kind: "choice" }>).label;
+      const a = (one.answers.get(name) as ChoiceAnswer).choice;
+      const b = (twin.answers.get(name) as ChoiceAnswer).choice;
+      return { one, expected, a, b, rightA: a === expected, rightB: b === expected };
+    });
+    metrics = [
+      {
+        key: "accuracy",
+        label: "accuracy",
+        a: mean(observed.map((pair) => (pair.rightA ? 1 : 0))),
+        b: mean(observed.map((pair) => (pair.rightB ? 1 : 0))),
+        delta: true,
+      },
+    ];
+  } else {
+    observed = pairs.map(([one, twin]) => {
+      const expected = (one.expect[name] as Extract<Expectation, { kind: "score" }>).level;
+      const a = roundedLevel(one.answers.get(name) as ScoreAnswer);
+      const b = roundedLevel(twin.answers.get(name) as ScoreAnswer);
+      return { one, expected, a, b, rightA: a === expected, rightB: b === expected };
+    });
+    const off = (pair: Pair, side: "a" | "b"): number =>
+      Math.abs((pair[side] as number) - (pair.expected as number));
+    const both = (f: (pair: Pair, side: "a" | "b") => number): { a: number; b: number } => ({
+      a: mean(observed.map((pair) => f(pair, "a"))),
+      b: mean(observed.map((pair) => f(pair, "b"))),
+    });
+    metrics = [
+      { key: "exact", label: "exact", ...both((p, s) => (off(p, s) === 0 ? 1 : 0)), delta: true },
+      {
+        key: "withinOne",
+        label: "within one",
+        ...both((p, s) => (off(p, s) <= 1 ? 1 : 0)),
+        delta: true,
+      },
+      { key: "mae", label: "mae", ...both(off), delta: true },
+    ];
+  }
+
+  const flips: Flip[] = [];
+  let fixed = 0;
+  let broke = 0;
+  let changed = 0;
+  for (const pair of observed) {
+    if (pair.a === pair.b) continue;
+    const status: Flip["status"] =
+      !pair.rightA && pair.rightB ? "fixed" : pair.rightA ? "broke" : "changed";
+    if (status === "fixed") fixed += 1;
+    else if (status === "broke") broke += 1;
+    else changed += 1;
+    const base = { case: pair.one.line, expected: pair.expected, a: pair.a, b: pair.b, status };
+    flips.push(pair.one.id === undefined ? base : { ...base, id: pair.one.id });
+  }
+  return {
+    name,
+    kind,
+    paired: pairs.length,
+    metrics,
+    fixed,
+    broke,
+    changed,
+    mcnemar: mcnemar(fixed, broke),
+    flips,
+  };
+}
+
+/** The questions `b` is significantly worse at, for `--fail-on-regression`. */
+export function regressions(comparison: Comparison): Shared[] {
+  return comparison.questions.filter((q) => q.mcnemar.verdict === "worse");
+}
+
+/** How many flipped cases the text report lists per question before it points at the JSON. */
+const FLIPS_SHOWN = 10;
+
+/** The comparison as lines: a legend, a block per shared question, what could not be compared. */
+export function compareLines(comparison: Comparison): Line[] {
+  const out: Line[] = [];
+  const sides = [
+    ["a", comparison.a],
+    ["b", comparison.b],
+  ] as const;
+  const labelWidth = Math.max(...sides.map(([, side]) => [...side.label].length));
+  for (const [letter, side] of sides) {
+    const n = side.report.cases;
+    out.push(
+      line([
+        span("  "),
+        bold(letter),
+        span("  "),
+        span(padEnd(side.label, labelWidth)),
+        span("  "),
+        dim(`${side.report.model} · ${n} case${n === 1 ? "" : "s"}`),
+      ]),
+    );
+  }
+
+  const width = comparison.questions.reduce((wide, q) => Math.max(wide, [...q.name].length), 0);
+  for (const question of comparison.questions) {
+    out.push(blankLine());
+    out.push(...sharedLines(question, width));
+  }
+
+  const lists: Line[] = [];
+  if (comparison.onlyA.length > 0) {
+    lists.push(line([span("  "), dim("only in a: "), span(comparison.onlyA.join(", "))]));
+  }
+  if (comparison.onlyB.length > 0) {
+    lists.push(line([span("  "), dim("only in b: "), span(comparison.onlyB.join(", "))]));
+  }
+  for (const odd of comparison.mismatched) {
+    lists.push(
+      line([
+        span("  "),
+        dim("mismatched: "),
+        span(`${odd.name} is a ${odd.a} in a and a ${odd.b} in b`),
+      ]),
+    );
+  }
+  for (const name of comparison.unpaired) {
+    lists.push(
+      line([
+        span("  "),
+        dim("unpaired: "),
+        span(`${name} — no case was scored for it on both pages`),
+      ]),
+    );
+  }
+  if (lists.length > 0) out.push(blankLine(), ...lists);
+
+  const failures: Line[] = [];
+  for (const [letter, side] of sides) {
+    for (const failed of side.report.errors) failures.push(...errorCaseLines(failed, `${letter} `));
+  }
+  if (failures.length > 0) out.push(blankLine(), ...failures);
+
+  out.push(blankLine());
+  const tally = (report: Report): string => {
+    const errors = report.errors.length;
+    return `${report.answered} answered, ${errors} error${errors === 1 ? "" : "s"}`;
+  };
+  out.push(
+    line([
+      span("  "),
+      bold(`${comparison.cases} case${comparison.cases === 1 ? "" : "s"}`),
+      dim(` · a ${tally(comparison.a.report)} · b ${tally(comparison.b.report)}`),
+    ]),
+  );
+  out.push(usageLine(comparison.usage));
+  return out;
+}
+
+function sharedLines(question: Shared, width: number): Line[] {
+  const n = question.paired;
+  const out: Line[] = [
+    line([
+      span("  "),
+      bold(padEnd(question.name, width)),
+      span("  "),
+      span(padEnd(question.kind, 8), { fg: colorFor(question.kind) }),
+      dim(`${n} paired case${n === 1 ? "" : "s"}`),
+    ]),
+    line([span(`    ${" ".repeat(14)}`), dim(`${padEnd("a", 8)}${padEnd("b", 8)}Δ`)]),
+  ];
+  for (const metric of question.metrics) {
+    const cells = [fixed(metric.a), fixed(metric.b)];
+    if (metric.delta) cells.push(signed(metric.b - metric.a));
+    out.push(
+      line([
+        span("    "),
+        span(padEnd(metric.label, 14)),
+        span(
+          cells
+            .map((cell) => padEnd(cell, 8))
+            .join("")
+            .trimEnd(),
+        ),
+      ]),
+    );
+  }
+  out.push(
+    line([
+      span("    "),
+      span(`${question.fixed} fixed · ${question.broke} broke · ${question.changed} changed`),
+    ]),
+  );
+  const verdict = question.mcnemar.verdict;
+  out.push(
+    line([
+      span("    "),
+      verdict === "better" || verdict === "worse"
+        ? span(mcnemarText(question.mcnemar), { fg: verdict === "better" ? SCORE : BAD })
+        : dim(mcnemarText(question.mcnemar)),
+    ]),
+  );
+
+  const shown = question.flips.slice(0, FLIPS_SHOWN);
+  const names = shown.map((flip) => caseName(flip.case, flip.id));
+  const moves = shown.map(
+    (flip) => `${reading(question.kind, flip.a)} → ${reading(question.kind, flip.b)}`,
+  );
+  const nameWidth = names.reduce((wide, name) => Math.max(wide, [...name].length), 0);
+  const moveWidth = moves.reduce((wide, move) => Math.max(wide, [...move].length), 0);
+  shown.forEach((flip, at) => {
+    out.push(
+      line([
+        span("    "),
+        span(padEnd(names[at] as string, nameWidth)),
+        span("   "),
+        span(padEnd(moves[at] as string, moveWidth)),
+        span("   "),
+        span(flip.status, {
+          fg: flip.status === "fixed" ? SCORE : flip.status === "broke" ? BAD : DIM,
+        }),
+      ]),
+    );
+  });
+  const more = question.flips.length - shown.length;
+  if (more > 0)
+    out.push(line([span("    "), dim(`… ${more} more flipped; --json lists them all`)]));
+  return out;
+}
+
+/** The significance line, which says in words what the p-value allows and what it does not. */
+function mcnemarText(test: McNemar): string {
+  if (test.discordant === 0) return "McNemar: no discordant pairs, nothing to test";
+  if (test.verdict === "too few") {
+    return `McNemar: too few discordant pairs to call (${test.discordant}; ${MIN_DISCORDANT} are needed for p < ${ALPHA})`;
+  }
+  const head = `McNemar p ${test.p.toFixed(3)} over ${test.discordant} discordant pairs: `;
+  if (test.verdict === "better") return `${head}b is significantly better`;
+  if (test.verdict === "worse") return `${head}b is significantly worse`;
+  return `${head}no significant difference`;
+}
+
+/** A prediction as the report says it: yes or no, a label, a level. */
+function reading(kind: "noul" | "choice" | "score", value: Json): string {
+  if (kind === "noul") return value === true ? "yes" : "no";
+  if (kind === "score") return `level ${compact(value)}`;
+  return typeof value === "string" ? value : compact(value);
+}
+
+/** `case 7 (t-007)`: the line in the cases file, and the id when the case has one. */
+function caseName(line: number, id: string | undefined): string {
+  return `case ${line}${id === undefined ? "" : ` (${id})`}`;
+}
+
+/** A change, signed either way, so a regression reads as one. */
+function signed(n: number): string {
+  const text = n.toFixed(2);
+  if (text === "-0.00") return "+0.00";
+  return text.startsWith("-") ? text : `+${text}`;
+}
+
+/** The comparison as JSON, ready for `pretty`: both reports whole, and what moved between them. */
+export function compareJson(comparison: Comparison): Json {
+  const side = (letter: "a" | "b"): Json => {
+    const one = comparison[letter];
+    return { page: one.label, ...(reportJson(one.report) as JsonObject) };
+  };
+  const questions: JsonObject = {};
+  for (const question of comparison.questions) {
+    const pick = (f: (metric: Metric) => number | undefined): JsonObject => {
+      const out: JsonObject = {};
+      for (const metric of question.metrics) {
+        const value = f(metric);
+        if (value !== undefined) out[metric.key] = value;
+      }
+      return out;
+    };
+    questions[question.name] = {
+      kind: question.kind,
+      paired: question.paired,
+      a: pick((metric) => metric.a),
+      b: pick((metric) => metric.b),
+      delta: pick((metric) => (metric.delta ? metric.b - metric.a : undefined)),
+      fixed: question.fixed,
+      broke: question.broke,
+      changed: question.changed,
+      mcnemar: {
+        discordant: question.mcnemar.discordant,
+        p: question.mcnemar.p,
+        verdict: question.mcnemar.verdict,
+      },
+      flips: question.flips.map((flip) => {
+        const out: JsonObject = { case: flip.case };
+        if (flip.id !== undefined) out["id"] = flip.id;
+        out["expected"] = flip.expected;
+        out["a"] = flip.a;
+        out["b"] = flip.b;
+        out["status"] = flip.status;
+        return out;
+      }),
+    };
+  }
+  const usage: JsonObject = {
+    inputTokens: comparison.usage.inputTokens,
+    outputTokens: comparison.usage.outputTokens,
+    estimated: comparison.usage.estimated,
+  };
+  if (comparison.usage.cost !== undefined) usage["cost"] = comparison.usage.cost.total;
+  return {
+    a: side("a"),
+    b: side("b"),
+    questions,
+    onlyA: comparison.onlyA.slice(),
+    onlyB: comparison.onlyB.slice(),
+    mismatched: comparison.mismatched.map((odd) => ({ name: odd.name, a: odd.a, b: odd.b })),
+    unpaired: comparison.unpaired.slice(),
+    regressions: regressions(comparison).map((q) => q.name),
+    usage,
+  };
 }

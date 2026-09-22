@@ -442,9 +442,170 @@ describe.runIf(built)("scoring a rubric offline", () => {
   it("lists eval and its flags in --help", () => {
     const help = jev(["--help"]).stdout;
     expect(help).toContain("eval");
-    for (const flag of ["--cases", "--concurrency", "--cache", "--max-cost", "--min-accuracy"]) {
+    for (const flag of [
+      "--cases",
+      "--concurrency",
+      "--cache",
+      "--max-cost",
+      "--min-accuracy",
+      "--compare",
+      "--fail-on-regression",
+    ]) {
       expect(help).toContain(flag);
     }
+  });
+});
+
+/** The candidate page: is_urgent asked another way, frustration dropped, sarcasm added. */
+const EVAL_PAGE_B = `placeholder
+---
+is_urgent? The message conveys urgency or time pressure
+department: Which team should handle this
+  billing = Payment or subscription issues
+  technical = Bugs or integration problems
+  sales = Pricing and plans
+sarcasm? The customer is being sarcastic
+`;
+
+/** A directory holding two pages and a cases file, for the duration of one test. */
+function withPages(
+  cases: string,
+  run: (a: string, b: string, casesPath: string) => void,
+  pageB: string = EVAL_PAGE_B,
+): void {
+  const dir = mkdtempSync(join(tmpdir(), "jev-compare-"));
+  try {
+    const a = join(dir, "a.jev");
+    const b = join(dir, "b.jev");
+    const casesPath = join(dir, "cases.jsonl");
+    writeFileSync(a, EVAL_PAGE);
+    writeFileSync(b, pageB);
+    writeFileSync(casesPath, cases);
+    run(a, b, casesPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe.runIf(built)("comparing two pages offline", () => {
+  it("reports the difference per shared question, and what only one page asks", () => {
+    withPages(EVAL_CASES, (a, b, cases) => {
+      const { status, stdout, stderr } = jev([
+        "eval",
+        a,
+        "--compare",
+        b,
+        "--cases",
+        cases,
+        "--mock",
+      ]);
+      expect(status).toBe(0);
+      expect(stdout).toMatch(/is_urgent\s+noul\s+2 paired cases/);
+      expect(stdout).toMatch(/department\s+choice\s+3 paired cases/);
+      expect(stdout).toContain("McNemar");
+      expect(stdout).toContain("only in a: frustration");
+      expect(stdout).toContain("only in b: sarcasm");
+      expect(stdout).toContain("3 cases · a 3 answered, 0 errors · b 3 answered, 0 errors");
+      expect(stderr).toContain("Simulated answers");
+    });
+  });
+
+  it("prints both reports and the comparison as JSON", () => {
+    withPages(EVAL_CASES, (a, b, cases) => {
+      const { status, stdout } = jev([
+        "eval",
+        a,
+        "--compare",
+        b,
+        "--cases",
+        cases,
+        "--mock",
+        "--json",
+      ]);
+      expect(status).toBe(0);
+      const report = JSON.parse(stdout) as Record<string, Record<string, unknown>>;
+      expect(report["a"]?.["page"]).toBe(a);
+      expect(report["b"]?.["page"]).toBe(b);
+      expect(Object.keys(report["questions"] ?? {})).toEqual(["is_urgent", "department"]);
+      expect(report["onlyB"]).toEqual(["sarcasm"]);
+      expect(report["regressions"]).toEqual([]);
+    });
+  });
+
+  it("names the page a label does not fit", () => {
+    withPages('{"state": "x", "expect": {"frustration": 2, "sarcasm": 1}}', (a, b, cases) => {
+      const { status, stderr } = jev(["eval", a, "--compare", b, "--cases", cases, "--mock"]);
+      expect(status).toBe(1);
+      expect(stderr).toContain(`cases line 1: ${b}: sarcasm is a noul`);
+    });
+  });
+
+  it("exits 2 when the pages cannot be told apart on the command line", () => {
+    withPages(EVAL_CASES, (a, b, cases) => {
+      const both = jev(["eval", "--compare", "-", "--cases", cases, "--mock"], { input: "x" });
+      expect(both.status).toBe(2);
+      expect(both.stderr).toContain(
+        "only one of the page, --compare and --cases can come from stdin.",
+      );
+      const lonely = jev(["eval", a, "--cases", cases, "--mock", "--fail-on-regression"]);
+      expect(lonely.status).toBe(2);
+      expect(lonely.stderr).toContain(
+        "--fail-on-regression needs --compare: there is nothing to regress from.",
+      );
+      expect(jev(["eval", a, "--compare", b, "--mock"]).status).toBe(2);
+    });
+  });
+
+  it("fails on a regression the test can see, and only when asked to", () => {
+    // Label every state the way page a answers it, so page a is always right and every case
+    // page b answers differently is one it broke. The simulator is deterministic, so this holds.
+    const noulOf = (instructions: string, state: string): boolean => {
+      const answer = mock.answer(state, "is_urgent", { type: "noul", instructions });
+      return answer?.type === "noul" && isYes(answer, 0.5);
+    };
+    const lines: string[] = [];
+    let broke = 0;
+    for (let i = 0; broke < 8; i++) {
+      const state = `ticket ${i}`;
+      const a = noulOf("The message conveys urgency", state);
+      if (a !== noulOf("The message conveys urgency or time pressure", state)) broke += 1;
+      lines.push(JSON.stringify({ state, expect: { is_urgent: a } }));
+    }
+    withPages(lines.join("\n"), (a, b, cases) => {
+      const args = ["eval", a, "--compare", b, "--cases", cases, "--mock"];
+      const quiet = jev(args);
+      expect(quiet.status).toBe(0);
+      expect(quiet.stdout).toContain("0 fixed · 8 broke · 0 changed");
+      expect(quiet.stdout).toContain("b is significantly worse");
+      const strict = jev([...args, "--fail-on-regression"]);
+      expect(strict.status).toBe(1);
+      expect(strict.stderr).toContain(
+        `jev eval: is_urgent is significantly worse in ${b} (McNemar p 0.008).`,
+      );
+    });
+  });
+
+  it("holds both pages to --min-accuracy, and says which one missed", () => {
+    // States both pages answer alike, labelled the other way: both pages score 0.
+    const lines: string[] = [];
+    for (let i = 0; lines.length < 3; i++) {
+      const state = `ticket ${i}`;
+      const [a, b] = [
+        "The message conveys urgency",
+        "The message conveys urgency or time pressure",
+      ].map((instructions) => {
+        const answer = mock.answer(state, "is_urgent", { type: "noul", instructions });
+        return answer?.type === "noul" && isYes(answer, 0.5);
+      });
+      if (a === b) lines.push(JSON.stringify({ state, expect: { is_urgent: !a } }));
+    }
+    withPages(lines.join("\n"), (a, b, cases) => {
+      const args = ["eval", a, "--compare", b, "--cases", cases, "--mock", "--min-accuracy", "0.5"];
+      const { status, stderr } = jev(args);
+      expect(status).toBe(1);
+      expect(stderr).toContain(`jev eval: ${a}: is_urgent accuracy 0.00 is below 0.50.`);
+      expect(stderr).toContain(`jev eval: ${b}: is_urgent accuracy 0.00 is below 0.50.`);
+    });
   });
 });
 
@@ -537,6 +698,37 @@ describe.runIf(built)("a live eval", () => {
     expect(status).toBe(1);
     expect(requests).toBe(0);
     expect(stderr).toContain("refusing to send");
+  });
+
+  it("compares two pages over one pool, one preflight and one cache", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jev-live-compare-"));
+    try {
+      const other = join(dir, "b.jev");
+      writeFileSync(other, "placeholder\n---\nis_urgent? Something needs doing now\n");
+      const cache = join(dir, "cache");
+      const args = ["--compare", other, "--cache", cache, "--price", "0.20/1.00"];
+      const first = await live(CASES, args);
+      expect(first.status).toBe(0);
+      expect(requests).toBe(8);
+      expect(first.stderr).toContain("jev eval: 4 + 4 cases over two pages, ≈");
+      expect(first.stderr).toContain("at $0.20/$1.00 per Mtok");
+      expect(first.stdout).toContain("80 in / 40 out tokens");
+      expect(first.stdout).toContain("McNemar: no discordant pairs, nothing to test");
+      const again = await live(CASES, args);
+      expect(requests).toBe(0);
+      expect(again.stdout).toBe(first.stdout);
+      const refused = await live(CASES, [
+        ...args.slice(0, 2),
+        "--max-cost",
+        "0.000001",
+        "--price",
+        "0.20/1.00",
+      ]);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain("refusing to send");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("carries on when one case is refused, and says which", async () => {

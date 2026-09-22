@@ -3,6 +3,21 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **Two pages, one set of cases, and whether the difference is real.** `jev eval a.jev --compare
+b.jev --cases cases.jsonl` runs both pages over the same labelled states and reports, per
+  question they share, the change in Brier, accuracy and F1 (or exact, within one and MAE for a
+  score), the cases whose answer flipped — `fixed`, `broke` or `changed` — and an exact McNemar
+  test over the cases one page got right and the other wrong, which says "too few" instead of a
+  p-value when there are fewer than six. Both runs share one cost estimate, one pool of workers and
+  one cache; `--fail-on-regression` exits 1 when the second page is significantly worse, and
+  `--json` prints both reports next to the comparison. `jev_eval` over MCP takes `compare` too.
+  New `parseCompareCases`, `runCompare`, `compare`, `compareLines`, `compareJson`, `regressions`
+  and `mcnemar` on `evaluate`.
+
 ## 0.6.0
 
 ### Added

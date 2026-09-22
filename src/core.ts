@@ -50,7 +50,7 @@ export * as codegen from "./repl/codegen.js";
 export * as cost from "./repl/cost.js";
 export type { Cost, Estimate, QuestionEstimate, Rates, Thread } from "./repl/cost.js";
 export * as evaluate from "./repl/evaluate.js";
-export type { Case, Expectation, Outcome, Report } from "./repl/evaluate.js";
+export type { Case, Comparison, Expectation, Outcome, Report } from "./repl/evaluate.js";
 export * as headless from "./repl/headless.js";
 export type { Answered, Command as HeadlessCommand } from "./repl/headless.js";
 export * as mock from "./repl/mock.js";

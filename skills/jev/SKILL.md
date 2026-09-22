@@ -120,6 +120,7 @@ jev run   page.jev --state "..." --threshold 0.7
 jev run   page.jev --turn "customer: ..." --turn "agent: ..."   # append turns
 jev run   page.jev --json           # the raw response body, for jq
 jev eval  page.jev --cases cases.jsonl --min-accuracy 0.9
+jev eval  page.jev --compare v2.jev --cases cases.jsonl --fail-on-regression
 jev ts    page.jev                  # the session as TypeScript
 jev rust  page.jev                  # the session as Rust
 ```
@@ -138,6 +139,11 @@ A cases file for `jev eval` is JSON Lines, one labelled state per line:
 `expect` names questions from the page: `true`/`false` for a noul, a label for a
 choice, a level (name or index) for a score. Questions you leave out are not scored.
 
+To tell whether a rewrite of a page is better, run both over the same cases with
+`--compare`: it prints the change per question, the cases whose answer flipped, and an
+exact McNemar test. Report "b is significantly better" only when it says so — with fewer
+than six discordant cases it says "too few", and that means the cases cannot tell.
+
 ## MCP tools
 
 When the jev MCP server is connected, the same work is available as tools — prefer
@@ -148,7 +154,8 @@ them over shelling out, and pass the page as text rather than writing a temp fil
 - `jev_request` — the exact request body a page would POST.
 - `jev_cost` — estimated tokens, priced when rates are given.
 - `jev_ask` — send the page (or answer it offline when no key is set) and return the answers.
-- `jev_eval` — run a page over labelled cases and score the answers.
+- `jev_eval` — run a page over labelled cases and score the answers; `compare` takes a
+  second page and reports the difference.
 - `jev_code` — the page as a TypeScript or Rust program.
 - `jev_presets` — ready-made pages to start from: triage, moderation, lead, reply.
 
