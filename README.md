@@ -245,6 +245,36 @@ const client = new Client({
 });
 ```
 
+### Recording and replaying
+
+A test that talks to the API costs money, needs a key and answers differently tomorrow. Record the
+answers once, then replay them: `TYPESAFE_RECORD=<dir>` writes every successful `systemOne`
+response to `<dir>/<key>.json`, and `TYPESAFE_REPLAY=<dir>` answers from those files and never
+touches the network — no key needed.
+
+```sh
+TYPESAFE_RECORD=test/cassettes npm test   # once, live, with a key
+TYPESAFE_REPLAY=test/cassettes npm test   # every time after: offline, free, the same answers
+```
+
+The same thing as options, which win over the environment:
+
+```ts
+const client = new Client({ replay: "test/cassettes" }); // or { record: "test/cassettes" }
+```
+
+The key is the SHA-256 of the compact request body — `{ state, model, questions }`, in that
+order, plus anything `extraBody` adds — so a different state, model or question is a different
+file. A request with no recording throws `ReplayMissError`, carrying the `key` and the `path` it
+looked for; a replay never falls back to the network or to simulated answers, because a test that
+quietly goes live is not the test you wrote. Setting both is a `ConfigError`, and so is
+`models().list()` on a replaying client. `cassetteKey(body)` is exported, for anything that wants
+to name a file the same way.
+
+A cassette directory is a `jev eval --cache` directory: same key, same file. Replay the cache of an
+eval run, or point `--cache` at what a test recorded. Record and replay read and write files, so
+they work in Node, not the browser.
+
 The REPL's own pieces are exported too (`App`, `Session`, `sketch`, `codegen`, `mock`, the terminal
 buffer), so a session can be driven, rendered or snapshot-tested without a terminal.
 

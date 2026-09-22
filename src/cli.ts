@@ -10,7 +10,6 @@
  * saved with `:save` and then run from a script, a Makefile or CI.
  */
 
-import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import * as install from "./agent/installer.js";
 import type { Host, Sent } from "./agent/mcp.js";
 import { serve } from "./agent/serve.js";
-import { compact, pretty } from "./json.js";
+import { pretty } from "./json.js";
 import { App } from "./repl/app.js";
 import type { Msg } from "./repl/app.js";
 import * as cost from "./repl/cost.js";
@@ -32,6 +31,7 @@ import { parseTurn } from "./repl/session.js";
 import { render } from "./repl/ui.js";
 import { Terminal } from "./tui/terminal.js";
 import { linesText } from "./tui/style.js";
+import { cassetteKey } from "./typesafe/cassette.js";
 import { Client } from "./typesafe/client.js";
 import { API_KEY_ENV, VERSION } from "./typesafe/constants.js";
 import { decodeSystemOne, makeSystemOneResponse } from "./typesafe/responses.js";
@@ -264,10 +264,12 @@ function mockAsk(session: Session): Promise<evaluate.Outcome> {
   return Promise.resolve({ ok: true, answers: headless.mockAnswers(session) });
 }
 
-/** The cache key: the request body this case would POST, hashed. */
-function cacheKey(session: Session, model: string): string {
-  const body = compact({ state: session.state, model, questions: session.questionsJson() });
-  return createHash("sha256").update(body).digest("hex");
+/**
+ * The cache key: the request body this case would POST, hashed — the library's cassette key, so
+ * a `TYPESAFE_RECORD` directory is a cache and a cache can be replayed.
+ */
+function cacheKey(session: Session, model: string): Promise<string> {
+  return cassetteKey({ state: session.state, model, questions: session.questionsJson() });
 }
 
 /** A cached response, or `undefined` when there is none this run can use. */
@@ -308,7 +310,8 @@ function liveAsk(
     options.timeoutMs === undefined ? { model } : { model, timeoutMs: options.timeoutMs };
   const dir = options.cache;
   return async (session) => {
-    const file = dir === undefined ? undefined : join(dir, `${cacheKey(session, model)}.json`);
+    const file =
+      dir === undefined ? undefined : join(dir, `${await cacheKey(session, model)}.json`);
     if (file !== undefined) {
       const hit = cached(file, session);
       if (hit !== undefined) return hit;

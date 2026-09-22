@@ -3,6 +3,19 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **Record and replay.** `TYPESAFE_RECORD=<dir>` (or `new Client({ record: dir })`) writes each
+  successful `systemOne` response body to `<dir>/<key>.json`; `TYPESAFE_REPLAY=<dir>` (or
+  `{ replay: dir }`) answers from there with no network and no API key. A request with no
+  recording throws the new `ReplayMissError`, with the `key` and `path` it looked for, and never
+  falls back to a live call. Setting both is a `ConfigError`.
+- New `cassetteKey` on both exports: the SHA-256 of a compact request body, in hex. `jev eval
+--cache` now uses it too, unchanged, so a cassette directory and an eval cache are
+  interchangeable. A test pins the digest of a fixture, for the other SDKs to match.
+
 ## 0.6.0
 
 ### Added

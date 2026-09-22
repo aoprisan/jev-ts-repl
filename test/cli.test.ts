@@ -14,6 +14,8 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import * as mock from "../src/repl/mock.js";
+import { Client } from "../src/typesafe/client.js";
+import { noul } from "../src/typesafe/questions.js";
 import { isYes } from "../src/typesafe/responses.js";
 
 const CLI = resolve(import.meta.dirname, "../dist/cli.js");
@@ -519,6 +521,39 @@ describe.runIf(built)("a live eval", () => {
       const first = await live(CASES, ["--cache", dir]);
       expect(first.status).toBe(0);
       expect(requests).toBe(4);
+      const again = await live(CASES, ["--cache", dir]);
+      expect(requests).toBe(0);
+      expect(again.stdout).toBe(first.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a cache a replaying client can read, and reads what a recording client kept", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jev-cache-"));
+    const questions = { is_urgent: noul("The message conveys urgency") };
+    try {
+      const first = await live(CASES, ["--cache", dir]);
+      expect(first.status).toBe(0);
+      const replaying = new Client({ replay: dir, model: "jev-latest" });
+      const res = await replaying.systemOne("urgent: the payout failed", questions);
+      expect(res.noul("is_urgent")?.noul).toBe(0.9);
+
+      rmSync(dir, { recursive: true, force: true });
+      const recording = new Client({
+        apiKey: "sk-test",
+        baseUrl,
+        model: "jev-latest",
+        record: dir,
+      });
+      for (const state of [
+        "urgent: the payout failed",
+        "urgent: checkout is down",
+        "a question about the plan",
+        "a note of thanks",
+      ]) {
+        await recording.systemOne(state, questions);
+      }
       const again = await live(CASES, ["--cache", dir]);
       expect(requests).toBe(0);
       expect(again.stdout).toBe(first.stdout);
