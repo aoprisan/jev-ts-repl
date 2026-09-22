@@ -252,6 +252,31 @@ describe("the tools", () => {
     expect(broken.text).toContain("compare:");
   });
 
+  it("hands back the page with its bars written in when asked to calibrate", async () => {
+    const cases = [
+      '{"state": "My card was declined", "expect": {"department": "billing"}}',
+      '{"state": "The webhook returns 500", "expect": {"department": "technical"}}',
+    ].join("\n");
+    const args = { page: PAGE, cases, calibrate: true, targetAccuracy: 0 };
+    const table = await callTool("jev_eval", args);
+    expect(table.isError).toBe(false);
+    expect(table.text).toContain("calibration  target accuracy 0.00");
+    expect(table.text).toContain("# the page, calibrated");
+    expect(table.text).toContain("  @confidence 0\n");
+    const json = await callTool("jev_eval", { ...args, json: true });
+    const report = JSON.parse(json.text) as { calibration: JsonObject };
+    expect(report.calibration["written"]).toBe(true);
+    expect(report.calibration["text"]).toContain(
+      "technical = Bugs or integration problems\n  @confidence 0",
+    );
+    const loaded = headless.load(PAGE);
+    if (!loaded.ok) throw new Error(loaded.error);
+    const body = headless.requestText(loaded.value, "m");
+    const refused = await callTool("jev_eval", { ...args, page: body });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("calibrate needs a .jev page");
+  });
+
   it("says which line of the cases file it could not read", async () => {
     const { text, isError } = await callTool("jev_eval", { page: PAGE, cases: "{oops}" });
     expect(isError).toBe(true);

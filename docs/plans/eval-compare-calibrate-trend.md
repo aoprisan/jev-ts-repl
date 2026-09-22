@@ -362,13 +362,20 @@ Problems, on the directive's line, exactly (`N` is 1-based):
 The unknown-directive message becomes exactly: ``unknown directive `@speed`; there is `@model`,
 and `@threshold` or `@confidence` under a question``.
 
+The value is a plain decimal — digits with at most one point, `^(\d+\.?\d*|\.\d+)$` — from 0
+to 1, read with `Number` / `str::parse::<f64>`. `1e-1`, `0x1`, `+0.5` and `.5.` are refused in
+every port rather than read however a runtime happens to read them. The check is exported as
+`sketch.parseBar(text): number | undefined`, which the web Build tab uses too.
+
 A directive whose question has problems of its own is tagged `bar` and otherwise ignored.
 
 ### Where the bar is kept
 
 `Session.bars: Map<string, number>`, name to bar, next to `questions`. `Session.from` takes an
 optional `bars`, `clone` copies it, `remove(name)` deletes the entry, and `insert(name, q)` deletes
-it when the replacing question is of a different kind. `bar(name)` reads it. `sketch.render` writes
+it when the replacing question is of a different kind. `bar(name)` reads it, and
+`thresholdOf(name, fallback)` is the rule below in one call: the bar when the question is a noul
+that has one, `fallback` otherwise. `sketch.render` writes
 `@threshold` after a noul and `@confidence` after a choice or a score, and nothing for a raw
 question even when an entry exists.
 
@@ -389,6 +396,10 @@ MCP tools, `jev ts` / `jev rust` and `:ts` / `:rust`, and the web's answers and 
 
 - The eval JSON gains `"threshold"` on every noul question, after `"brier"`: the one it was scored
   at. The top-level `threshold` stays the default.
+- `headless.answersText(answers, threshold, session?)` takes the session so `jev run` and `jev_ask`
+  read each noul at its own threshold.
+- The REPL's `:sketch` apply compares the bars as well as the request body, so a page that only
+  moves a bar does not report "nothing changed."
 - `jev check` names a bar: `is_urgent (noul, @threshold 0.6)`, `department (choice, @confidence
 0.7)`; questions without one print as before.
 
@@ -396,7 +407,9 @@ MCP tools, `jev ts` / `jev rust` and `:ts` / `:rust`, and the web's answers and 
 
 A noul's threshold is printed as `toFixed(2)` when that reads back as the same number and as the
 shortest representation otherwise, so existing output is unchanged. A choice's gate is printed with
-the shortest representation (`0.6` as before). A score with a bar gets the same gate a choice has:
+the shortest representation (`0.6` as before); in Rust, a gate with no `.` or `e` in it gets `.0`
+appended so it is an `f64` literal (`1` becomes `1.0`). A score with a bar gets the same gate a
+choice has:
 
 ```ts
 const frustration = res.score("frustration");
@@ -518,7 +531,11 @@ report too.
 
 `jev_eval` over MCP takes `calibrate` (boolean) and `targetAccuracy`; since it has no file, it
 appends the calibrated page to the text result after a line `# the page, calibrated`, and puts it
-in `calibration.text` of the JSON one.
+in `calibration.text` of the JSON one. `page` in its calibration JSON is `"page"`, and the lines
+name it `the page`. A run with errors is not an MCP error: the text result ends with the
+`not calibrating: …` sentence and the JSON one has `"calibration": {"refused": "<sentence>"}`. A
+request body is an argument error: `calibrate needs a .jev page: a request body has nowhere to keep
+a bar.`
 
 ### The web build tab
 

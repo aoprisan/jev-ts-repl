@@ -450,6 +450,8 @@ describe.runIf(built)("scoring a rubric offline", () => {
       "--min-accuracy",
       "--compare",
       "--fail-on-regression",
+      "--calibrate",
+      "--target-accuracy",
     ]) {
       expect(help).toContain(flag);
     }
@@ -609,6 +611,93 @@ describe.runIf(built)("comparing two pages offline", () => {
   });
 });
 
+describe.runIf(built)("writing the calibration back", () => {
+  it("writes the bars the run supports into the page, and says what changed", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      const before = readFileSync(page, "utf8");
+      const first = jev(["eval", page, "--cases", cases, "--mock", "--calibrate"]);
+      expect(first.status).toBe(0);
+      expect(first.stdout).toContain("calibration  target accuracy 0.90");
+      // The simulator is deterministic, so what these three cases support is fixed.
+      expect(first.stdout).toContain(
+        "is_urgent    left alone         no threshold gives an F1 above 0",
+      );
+      expect(first.stdout).toMatch(/frustration\s+@confidence 0\.25\s+was none\s+accuracy 1\.00/);
+      expect(first.stdout).toContain(`wrote 1 bar to ${page}`);
+      const after = readFileSync(page, "utf8");
+      expect(after).toContain("  Calm < Frustrated but civil < Very angry\n  @confidence 0.25\n");
+      // Only bar lines were added: take them out and the page is what it was.
+      expect(after.replace(/\n\s*@(threshold|confidence) [\d.]+/g, "")).toBe(before);
+
+      const again = jev(["eval", page, "--cases", cases, "--mock", "--calibrate"]);
+      expect(again.stdout).toContain("nothing to write:");
+      expect(readFileSync(page, "utf8")).toBe(after);
+      expect(jev(["check", page]).stdout).toContain("frustration (score, @confidence 0.25)");
+    });
+  });
+
+  it("adds the calibration to the JSON report", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      const args = ["eval", page, "--cases", cases, "--mock", "--calibrate", "--json"];
+      const { status, stdout } = jev([...args, "--target-accuracy", "0.5"]);
+      expect(status).toBe(0);
+      const report = JSON.parse(stdout) as { calibration: Record<string, unknown> };
+      expect(report.calibration).toMatchObject({ page, target: 0.5 });
+      expect(Object.keys(report.calibration["questions"] as object)).toEqual([
+        "is_urgent",
+        "department",
+        "frustration",
+      ]);
+    });
+  });
+
+  it("reads the page's own threshold everywhere a threshold is read", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      writeFileSync(page, EVAL_PAGE.replace("urgency\n", "urgency\n  @threshold 0.35\n"));
+      const run = jev(["run", page, "--state", "A payout failed", "--mock"]);
+      expect(run.stdout).toContain("at threshold 0.35");
+      const scored = jev(["eval", page, "--cases", cases, "--mock"]);
+      expect(scored.stdout).toMatch(/0\.35 \*/);
+      expect(jev(["ts", page]).stdout).toContain("is_urgent.noul >= 0.35");
+    });
+  });
+
+  it("refuses what it cannot write back", () => {
+    withFiles(EVAL_CASES, (page, cases) => {
+      const expectUsage = (args: string[], message: string, input?: string): void => {
+        const attempt = jev(args, input === undefined ? {} : { input });
+        expect(attempt.status).toBe(2);
+        expect(attempt.stderr).toContain(message);
+      };
+      expectUsage(
+        ["eval", page, "--compare", page, "--cases", cases, "--calibrate"],
+        "--calibrate and --compare do not mix: calibrate one page at a time.",
+      );
+      expectUsage(
+        ["eval", "--cases", cases, "--calibrate"],
+        "--calibrate writes the page back, so the page has to be a file, not stdin.",
+        EVAL_PAGE,
+      );
+      expectUsage(
+        ["eval", page, "--cases", cases, "--target-accuracy", "0.8"],
+        "--target-accuracy only applies with --calibrate.",
+      );
+      expectUsage(
+        ["eval", page, "--cases", cases, "--calibrate", "--target-accuracy", "2"],
+        "--target-accuracy takes a number from 0 to 1.",
+      );
+      const body = jev(["json", page]).stdout;
+      writeFileSync(page, body);
+      const refused = jev(["eval", page, "--cases", cases, "--mock", "--calibrate"]);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain(
+        "jev eval: --calibrate needs a .jev page: a request body has nowhere to keep a bar.",
+      );
+      expect(readFileSync(page, "utf8")).toBe(body);
+    });
+  });
+});
+
 describe.runIf(built)("a live eval", () => {
   let server: Server;
   let baseUrl: string;
@@ -726,6 +815,29 @@ describe.runIf(built)("a live eval", () => {
       ]);
       expect(refused.status).toBe(1);
       expect(refused.stderr).toContain("refusing to send");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not calibrate over a run with errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jev-live-calibrate-"));
+    try {
+      const page = join(dir, "page.jev");
+      const cases = join(dir, "cases.jsonl");
+      writeFileSync(page, PAGE_ONE);
+      writeFileSync(
+        cases,
+        `${CASES}\n{"id": "bad", "state": "refuse this one", "expect": {"is_urgent": true}}`,
+      );
+      const { status, stderr } = await jevAsync(["eval", page, "--cases", cases, "--calibrate"], {
+        env: { TYPESAFE_API_KEY: "sk-test", TYPESAFE_BASE_URL: baseUrl },
+      });
+      expect(status).toBe(1);
+      expect(stderr).toContain(
+        "jev eval: not calibrating: 1 case came back with errors, so the numbers are incomplete.",
+      );
+      expect(readFileSync(page, "utf8")).toBe(PAGE_ONE);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

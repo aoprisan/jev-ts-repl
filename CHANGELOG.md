@@ -18,6 +18,19 @@ b.jev --cases cases.jsonl` runs both pages over the same labelled states and rep
   New `parseCompareCases`, `runCompare`, `compare`, `compareLines`, `compareJson`, `regressions`
   and `mcnemar` on `evaluate`.
 
+- **The threshold lives on the page.** `@threshold 0.6` under a noul and `@confidence 0.65` under a
+  choice or a score write down the bar its answer is acted on at. The bar never goes on the wire;
+  it wins over `--threshold` and `:threshold` wherever an answer is read — the answer page, the
+  eval report's starred row, a comparison — and `jev ts` / `jev rust` gate on it instead of the
+  hard-coded 0.5 and 0.6. It round-trips through `:sketch`, `:save` and `:open`, the gutter labels
+  it `bar`, a misplaced one is a problem on its line, and the web Build tab has a field for it.
+- **`jev eval --calibrate` writes the bars back.** Each noul's best-F1 threshold and the lowest
+  confidence bar at which a choice or a score reaches `--target-accuracy` (default 0.9) go into the
+  page in place, touching nothing but the bar lines, and the report says what changed and why a
+  question was left alone. `jev_eval` over MCP takes `calibrate` and hands back the page. New
+  `Session.bars`, `bar` and `thresholdOf`; `sketch.setBars` and `parseBar`; `evaluate.calibrate`,
+  `calibrationLines` and `calibrationJson`.
+
 ## 0.6.0
 
 ### Added

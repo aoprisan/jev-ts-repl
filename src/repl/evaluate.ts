@@ -315,7 +315,9 @@ export interface NoulReport {
   readonly cases: number;
   /** Mean squared error of the probability itself, threshold or no threshold. */
   readonly brier: number;
-  /** Accuracy at the threshold this run was asked to use. */
+  /** What it was read at: the page's `@threshold`, or the run's threshold when it has none. */
+  readonly threshold: number;
+  /** Accuracy at that threshold. */
   readonly accuracy: number;
   readonly best: { readonly threshold: number; readonly f1: number };
   readonly sweep: readonly SweepRow[];
@@ -403,8 +405,9 @@ export function report(
   for (const [name, question] of session.questions) {
     const rows = scored.filter((one) => one.expect[name] !== undefined);
     if (rows.length === 0) continue;
-    if (question.kind === "noul") questions.push(noulReport(name, rows, options.threshold));
-    else if (question.kind === "choice") questions.push(choiceReport(name, question, rows));
+    if (question.kind === "noul") {
+      questions.push(noulReport(name, rows, session.thresholdOf(name, options.threshold)));
+    } else if (question.kind === "choice") questions.push(choiceReport(name, question, rows));
     else if (question.kind === "score") questions.push(scoreReport(name, rows));
   }
 
@@ -490,6 +493,7 @@ function noulReport(name: string, rows: readonly Scored[], threshold: number): N
     kind: "noul",
     cases: points.length,
     brier,
+    threshold,
     accuracy: chosen.accuracy,
     best: { threshold: best.threshold, f1: best.f1 },
     sweep,
@@ -582,8 +586,11 @@ function scoreReport(name: string, rows: readonly Scored[]): ScoreReport {
 }
 
 /** Coverage and accuracy at each cut: what you buy by only acting on confident answers. */
-function gate(points: ReadonlyArray<{ confidence: number; right: boolean }>): GateRow[] {
-  return CUTS.map((confidence) => {
+function gate(
+  points: ReadonlyArray<{ confidence: number; right: boolean }>,
+  cuts: readonly number[] = CUTS,
+): GateRow[] {
+  return cuts.map((confidence) => {
     const kept = points.filter((point) => point.confidence >= confidence);
     return {
       confidence,
@@ -650,7 +657,7 @@ export function reportLines(report: Report): Line[] {
   for (const question of report.questions) {
     if (out.length > 0) out.push(blankLine());
     out.push(headerLine(question, width));
-    if (question.kind === "noul") out.push(...sweepLines(question, report.threshold));
+    if (question.kind === "noul") out.push(...sweepLines(question));
     else if (question.kind === "choice") {
       out.push(...gateLines(question.gate, "accuracy"));
       out.push(...confusionLines(question));
@@ -693,7 +700,8 @@ function headerLine(question: QuestionReport, width: number): Line {
 }
 
 /** The sweep: what the threshold buys, row by row, with a `*` on the one this run used. */
-function sweepLines(question: NoulReport, threshold: number): Line[] {
+function sweepLines(question: NoulReport): Line[] {
+  const threshold = question.threshold;
   const out: Line[] = [
     line([
       span("    "),
@@ -837,6 +845,7 @@ function questionJson(question: QuestionReport): Json {
       kind: question.kind,
       cases: question.cases,
       brier: question.brier,
+      threshold: question.threshold,
       accuracy: question.accuracy,
       best: { threshold: question.best.threshold, f1: question.best.f1 },
       sweep: question.sweep.map((row) => ({
@@ -1071,7 +1080,15 @@ export function compare(
       if (labelled) unpaired.push(name);
       continue;
     }
-    questions.push(shared(name, question.kind, pairs, options.threshold, options.threshold));
+    questions.push(
+      shared(
+        name,
+        question.kind,
+        pairs,
+        a.session.thresholdOf(name, options.threshold),
+        b.session.thresholdOf(name, options.threshold),
+      ),
+    );
   }
 
   const keys = new Set([...a.cases, ...b.cases].map((one) => keyOf(one)));
@@ -1468,5 +1485,195 @@ export function compareJson(comparison: Comparison): Json {
     unpaired: comparison.unpaired.slice(),
     regressions: regressions(comparison).map((q) => q.name),
     usage,
+  };
+}
+
+// ---- writing the bars back ------------------------------------------------------------------
+
+/** The accuracy a choice's or score's bar has to reach when `--target-accuracy` is not given. */
+export const DEFAULT_TARGET = 0.9;
+
+/**
+ * The confidence bars calibration tries, `k / 20` for `k` from 0 to 19: finer than the report's
+ * gate, and computed by division so each prints as the short decimal it is.
+ */
+export const CALIBRATION_CUTS: readonly number[] = Array.from({ length: 20 }, (_, k) => k / 20);
+
+/** What calibration made of one question: the bar it found, or why it left the question alone. */
+export interface CalibratedQuestion {
+  readonly name: string;
+  readonly kind: "noul" | "choice" | "score";
+  /** The new bar; `undefined` when the question is left alone. */
+  readonly bar: number | undefined;
+  /** The bar the page had before. */
+  readonly was: number | undefined;
+  /** For a noul: the F1 at the new threshold. */
+  readonly f1?: number;
+  /** For a choice or a score: the accuracy over the cases that clear the new bar, and how many do. */
+  readonly accuracy?: number;
+  readonly coverage?: number;
+  /** Why the question was left alone. */
+  readonly reason?: string;
+}
+
+export interface Calibration {
+  readonly target: number;
+  readonly questions: readonly CalibratedQuestion[];
+  /** Only the bars that changed: what `sketch.setBars` has to write. */
+  readonly changed: ReadonlyMap<string, number>;
+}
+
+/**
+ * The bars a run supports, one per scored question.
+ *
+ * A noul gets the threshold with the best F1, which the report has already found. A choice or a
+ * score gets the lowest confidence bar at which the answers it lets through are right at least
+ * `target` of the time: the lowest, because every step up sends more of the work to a person.
+ */
+export function calibrate(
+  session: Session,
+  cases: readonly Case[],
+  outcomes: readonly Outcome[],
+  scoredReport: Report,
+  target: number,
+): Calibration {
+  const { scored } = scoredOf(cases, outcomes);
+  const questions: CalibratedQuestion[] = [];
+  const changed = new Map<string, number>();
+  for (const question of scoredReport.questions) {
+    const was = session.bar(question.name);
+    let found: CalibratedQuestion;
+    if (question.kind === "noul") {
+      found =
+        question.best.f1 > 0
+          ? { ...base(question, was), bar: question.best.threshold, f1: question.best.f1 }
+          : { ...base(question, was), reason: "no threshold gives an F1 above 0" };
+    } else {
+      const name = question.name;
+      const points = scored
+        .filter((one) => one.expect[name] !== undefined)
+        .map((one) => {
+          const answer = one.answers.get(name) as ChoiceAnswer | ScoreAnswer;
+          const expectation = one.expect[name] as Expectation;
+          const right =
+            answer.type === "choice"
+              ? answer.choice === (expectation as Extract<Expectation, { kind: "choice" }>).label
+              : roundedLevel(answer) ===
+                (expectation as Extract<Expectation, { kind: "score" }>).level;
+          return { confidence: answer.confidence, right };
+        });
+      const rows = gate(points, CALIBRATION_CUTS);
+      const reached = rows.find((row) => row.accuracy !== undefined && row.accuracy >= target);
+      if (reached !== undefined) {
+        found = {
+          ...base(question, was),
+          bar: reached.confidence,
+          accuracy: reached.accuracy as number,
+          coverage: reached.coverage,
+        };
+      } else {
+        let best: GateRow | undefined;
+        for (const row of rows) {
+          if (
+            row.accuracy !== undefined &&
+            (best === undefined || row.accuracy > (best.accuracy as number))
+          ) {
+            best = row;
+          }
+        }
+        const reason =
+          best === undefined
+            ? `no confidence bar reaches accuracy ${fixed(target)}`
+            : `no confidence bar reaches accuracy ${fixed(target)} (best ${fixed(best.accuracy as number)} at ${fixed(best.confidence)})`;
+        found = { ...base(question, was), reason };
+      }
+    }
+    questions.push(found);
+    if (found.bar !== undefined && found.bar !== was) changed.set(found.name, found.bar);
+  }
+  return { target, questions, changed };
+}
+
+/** Why a run with errors writes nothing back: the bars would be fitted to the cases that worked. */
+export function notCalibrating(errors: number): string {
+  return `not calibrating: ${errors} case${errors === 1 ? " came" : "s came"} back with errors, so the numbers are incomplete.`;
+}
+
+function base(
+  question: QuestionReport,
+  was: number | undefined,
+): { name: string; kind: QuestionReport["kind"]; bar: undefined; was: number | undefined } {
+  return { name: question.name, kind: question.kind, bar: undefined, was };
+}
+
+/** The directive a question's bar is written with. */
+function directiveOf(kind: CalibratedQuestion["kind"]): string {
+  return kind === "noul" ? "@threshold" : "@confidence";
+}
+
+/**
+ * What calibration changed, as lines for under the report: one per question, the new directive as
+ * it now reads on the page, what it replaced, and the evidence for it.
+ */
+export function calibrationLines(calibration: Calibration, page: string): Line[] {
+  const out: Line[] = [
+    line([span("  "), bold("calibration"), dim(`  target accuracy ${fixed(calibration.target)}`)]),
+  ];
+  const width = calibration.questions.reduce((wide, q) => Math.max(wide, [...q.name].length), 0);
+  for (const question of calibration.questions) {
+    const spans = [span("    "), bold(padEnd(question.name, width)), span("  ")];
+    if (question.bar === undefined) {
+      spans.push(dim(padEnd("left alone", 19)), dim(question.reason ?? ""));
+    } else {
+      const was =
+        question.was === question.bar
+          ? "unchanged"
+          : `was ${question.was === undefined ? "none" : String(question.was)}`;
+      const evidence =
+        question.kind === "noul"
+          ? `f1 ${fixed(question.f1 ?? 0)}`
+          : `accuracy ${fixed(question.accuracy ?? 0)} over ${fixed(question.coverage ?? 0)} of cases`;
+      spans.push(
+        span(padEnd(`${directiveOf(question.kind)} ${String(question.bar)}`, 19), {
+          fg: colorFor(question.kind),
+        }),
+        dim(padEnd(was, 11)),
+        span(evidence),
+      );
+    }
+    out.push(line(spans));
+  }
+  const n = calibration.changed.size;
+  out.push(
+    line([
+      span("  "),
+      n === 0
+        ? dim(`nothing to write: ${page} already holds these bars`)
+        : span(`wrote ${n} bar${n === 1 ? "" : "s"} to ${page}`),
+    ]),
+  );
+  return out;
+}
+
+/** The calibration as JSON, for the report's `calibration` key. */
+export function calibrationJson(calibration: Calibration, page: string): JsonObject {
+  const questions: JsonObject = {};
+  for (const question of calibration.questions) {
+    const out: JsonObject = {
+      kind: question.kind,
+      bar: question.bar ?? null,
+      was: question.was ?? null,
+    };
+    if (question.f1 !== undefined) out["f1"] = question.f1;
+    if (question.accuracy !== undefined) out["accuracy"] = question.accuracy;
+    if (question.coverage !== undefined) out["coverage"] = question.coverage;
+    if (question.reason !== undefined) out["reason"] = question.reason;
+    questions[question.name] = out;
+  }
+  return {
+    page,
+    target: calibration.target,
+    written: calibration.changed.size > 0,
+    questions,
   };
 }

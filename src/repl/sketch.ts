@@ -26,6 +26,8 @@
  * - `name! {json}` sends a hand-built question object.
  * - The parts of a question can also go on its first line, separated by `|`.
  * - `@model jev-2` pins the model; `#` starts a comment. Indentation is only for reading.
+ * - `@threshold 0.6` under a noul, or `@confidence 0.7` under a choice or a score, writes down the
+ *   bar its answer is acted on at. It stays on the page and is never sent.
  */
 
 import type { Json } from "../json.js";
@@ -40,7 +42,7 @@ import {
 } from "../typesafe/questions.js";
 import type { Color, Line, Style } from "../tui/style.js";
 import { line, span } from "../tui/style.js";
-import { CHOICE, DIM, NOUL, SCORE, WARN } from "./format.js";
+import { ACCENT, CHOICE, DIM, NOUL, SCORE, WARN } from "./format.js";
 import type { Entry } from "./session.js";
 import { Session } from "./session.js";
 
@@ -60,6 +62,8 @@ export type Tag =
   | "option"
   | "level"
   | "json"
+  /** `@threshold` or `@confidence`: the bar the question above is acted on at. */
+  | "bar"
   /** A line that could not be placed; it always carries a problem. */
   | "stray";
 
@@ -78,6 +82,7 @@ const LABELS: Record<Tag, string> = {
   option: "option",
   level: "level",
   json: "json",
+  bar: "bar",
   stray: "?",
 };
 
@@ -100,6 +105,8 @@ export function tagColor(tag: Tag): Color {
     case "raw":
     case "json":
       return WARN;
+    case "bar":
+      return ACCENT;
     case "stray":
       return "red";
     default:
@@ -118,6 +125,16 @@ export interface Problem {
   readonly message: string;
 }
 
+/** Where a question sits on the page, so a bar can be written back without redrawing the page. */
+export interface BlockSpan {
+  /** Zero-based line of the question's head. */
+  readonly head: number;
+  /** Zero-based line of the last line that belongs to it: a part, a criterion, its bar. */
+  readonly last: number;
+  /** Zero-based line of its `@threshold` or `@confidence`, when it has one. */
+  readonly bar: number | undefined;
+}
+
 /**
  * A parsed sketch. Questions with problems are left out of `questions` but keep their tags, so the
  * page still reads sensibly while it is being fixed.
@@ -126,6 +143,10 @@ export class ParsedSketch {
   state: Json = "";
   model: string | undefined;
   questions: Entry[] = [];
+  /** Each question's bar, from its `@threshold` or `@confidence` line. */
+  bars: Map<string, number> = new Map();
+  /** Every question that parsed, by name: where it is on the page. */
+  blocks: Map<string, BlockSpan> = new Map();
   /** One per line of the input. */
   tags: Tag[] = [];
   problems: Problem[] = [];
@@ -139,6 +160,7 @@ export class ParsedSketch {
       state: this.state,
       questions: this.questions.map(([name, q]) => [name, q] as Entry),
       model: this.model,
+      bars: this.bars,
     });
   }
 
@@ -156,7 +178,12 @@ interface Block {
   /** The head line after the marker, unsplit — raw questions need it whole. */
   rest: string;
   parts: Array<[number, string]>;
+  /** `@threshold` / `@confidence` lines: the line, which of the two, and the number. */
+  bars: Array<[line: number, directive: Bar, value: number]>;
 }
+
+/** The two directives that set a question's bar. */
+type Bar = "threshold" | "confidence";
 
 export function parse(text: string): ParsedSketch {
   const lines = text.split("\n");
@@ -194,7 +221,27 @@ export function parse(text: string): ParsedSketch {
       const at = directive.search(/\s/);
       const name = at === -1 ? directive : directive.slice(0, at);
       const arg = at === -1 ? "" : directive.slice(at + 1).trim();
-      if (name === "model" && arg !== "") {
+      if (name === "threshold" || name === "confidence") {
+        const bar = parseBar(arg.trim());
+        if (bar === undefined) {
+          out.tags[i] = "stray";
+          out.problems.push({
+            line: i,
+            message: `\`@${name}\` takes a number from 0 to 1, e.g. \`@${name} 0.6\``,
+          });
+        } else if (!block) {
+          out.tags[i] = "stray";
+          out.problems.push({
+            line: i,
+            message:
+              name === "threshold"
+                ? "`@threshold` belongs under a question — put it below the `name?` line it sets"
+                : "`@confidence` belongs under a question — put it below the choice or score it gates",
+          });
+        } else {
+          block.bars.push([i, name, bar]);
+        }
+      } else if (name === "model" && arg !== "") {
         out.tags[i] = "model";
         out.model = arg;
       } else if (name === "model") {
@@ -207,7 +254,7 @@ export function parse(text: string): ParsedSketch {
         out.tags[i] = "stray";
         out.problems.push({
           line: i,
-          message: `unknown directive \`@${name}\`; only \`@model\` exists`,
+          message: `unknown directive \`@${name}\`; there is \`@model\`, and \`@threshold\` or \`@confidence\` under a question`,
         });
       }
       continue;
@@ -221,6 +268,7 @@ export function parse(text: string): ParsedSketch {
         marker: parsedHead.marker,
         rest: parsedHead.rest,
         parts: [],
+        bars: [],
       };
       continue;
     }
@@ -263,8 +311,49 @@ function isCriterion(word: string): boolean {
   return w === "yes" || w === "no" || w === "true" || w === "false";
 }
 
-/** Turn a finished block into a question, or into problems. */
+/**
+ * A bar as the page writes it: a plain decimal from 0 to 1. Plain, so `1e-1` and `0x1` are
+ * refused the same way in every port rather than read however a runtime happens to read them.
+ */
+export function parseBar(text: string): number | undefined {
+  if (!/^(\d+\.?\d*|\.\d+)$/.test(text)) return undefined;
+  const n = Number(text);
+  return n >= 0 && n <= 1 ? n : undefined;
+}
+
+/** Turn a finished block into a question and its bar, or into problems. */
 function finish(b: Block, out: ParsedSketch): void {
+  const before = out.questions.length;
+  finishQuestion(b, out);
+  const added = out.questions.length > before;
+  const kind = added ? out.questions[out.questions.length - 1]?.[1].kind : undefined;
+  let last = b.line;
+  for (const [i] of b.parts) last = Math.max(last, i);
+  let barAt: number | undefined;
+  for (const [i, directive, value] of b.bars) {
+    last = Math.max(last, i);
+    out.tags[i] = "bar";
+    // A question that did not parse has problems enough; its bar waits until it does.
+    if (!added) continue;
+    const refuse = (message: string): void => {
+      out.tags[i] = "stray";
+      out.problems.push({ line: i, message });
+    };
+    if (barAt !== undefined) refuse(`\`${b.name}\` already has a bar on line ${barAt + 1}`);
+    else if (kind === "raw") refuse("a raw question takes no bar — jev cannot read its answer");
+    else if (kind === "noul" && directive === "confidence") {
+      refuse("a yes/no question takes `@threshold`, not `@confidence`");
+    } else if (kind !== "noul" && directive === "threshold") {
+      refuse("a choice or a score takes `@confidence`, not `@threshold`");
+    } else {
+      barAt = i;
+      out.bars.set(b.name, value);
+    }
+  }
+  if (added) out.blocks.set(b.name, { head: b.line, last, bar: barAt });
+}
+
+function finishQuestion(b: Block, out: ParsedSketch): void {
   const problem = (line: number, message: string): void => {
     out.problems.push({ line, message });
   };
@@ -492,8 +581,57 @@ export function render(session: Session): string {
   session.questions.forEach(([name, question], i) => {
     if (i > 0 || session.model !== undefined) out += "\n";
     out += renderQuestion(name, question);
+    const bar = session.bar(name);
+    const directive = barDirective(question.kind);
+    if (bar !== undefined && directive !== undefined) out += `  ${directive} ${String(bar)}\n`;
   });
   return out;
+}
+
+/** Which directive holds a question's bar, by its kind; a raw question has none. */
+function barDirective(kind: Question["kind"]): string | undefined {
+  if (kind === "noul") return "@threshold";
+  if (kind === "choice" || kind === "score") return "@confidence";
+  return undefined;
+}
+
+/**
+ * Write bars into a page without redrawing it: each named question's bar line is replaced, or a
+ * new one is added at the end of its block, and every other line — comments, blank lines, the way
+ * someone chose to lay out their options — stays exactly as it was.
+ *
+ * Questions the page does not have, raw ones and pages that do not parse are left alone; the
+ * caller has already parsed the page and knows which it is.
+ */
+export function setBars(text: string, bars: ReadonlyMap<string, number>): string {
+  const parsed = parse(text);
+  const lines = text.split("\n");
+  const cr = text.includes("\r\n") ? "\r" : "";
+  const inserts: Array<[after: number, line: string]> = [];
+  for (const [name, value] of bars) {
+    const block = parsed.blocks.get(name);
+    const question = parsed.questions.find(([n]) => n === name)?.[1];
+    const directive = question === undefined ? undefined : barDirective(question.kind);
+    if (block === undefined || directive === undefined) continue;
+    if (block.bar !== undefined) {
+      const old = lines[block.bar] as string;
+      const indent = /^[ \t]*/.exec(old)?.[0] ?? "";
+      lines[block.bar] = `${indent}${directive} ${String(value)}${old.endsWith("\r") ? "\r" : ""}`;
+      continue;
+    }
+    let indent = "  ";
+    for (let i = block.head + 1; i <= block.last; i += 1) {
+      const tag = parsed.tags[i];
+      if (tag !== undefined && tag !== "blank" && tag !== "comment") {
+        indent = /^[ \t]*/.exec(lines[i] as string)?.[0] ?? "  ";
+        break;
+      }
+    }
+    inserts.push([block.last, `${indent}${directive} ${String(value)}${cr}`]);
+  }
+  inserts.sort((x, y) => y[0] - x[0]);
+  for (const [after, line] of inserts) lines.splice(after + 1, 0, line);
+  return lines.join("\n");
 }
 
 function renderQuestion(name: string, question: Question): string {

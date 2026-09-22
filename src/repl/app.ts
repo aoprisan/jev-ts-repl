@@ -899,10 +899,13 @@ export class App {
 
   /** Replace the session with a parsed page and say what changed. */
   #applySketch(parsed: sketch.ParsedSketch, text: string): void {
-    const before = this.session.requestJson(this.modelName());
+    // The bars are on the page but not on the wire, so they count as a change of their own.
+    const snapshot = (): string =>
+      `${this.session.requestJson(this.modelName())}${compact([...this.session.bars])}`;
+    const before = snapshot();
     // The page is the whole request: no `@model` line means the client default.
     this.session = parsed.toSession();
-    const after = this.session.requestJson(this.modelName());
+    const after = snapshot();
     this.#blank();
     this.#push(line([span("› ", { fg: ACCENT }), dim("sketch applied")]));
     if (before === after) {
@@ -1212,8 +1215,9 @@ export class App {
       line([span("  answers  ", { fg: WARN, bold: true }), dim(`simulated · ${this.modelName()}`)]),
     );
     for (const [name, answer] of answers) {
-      if (answer) this.#extend(answerLines(name, answer, this.threshold));
-      else this.#warn(`${name}: mock mode cannot simulate this question shape.`);
+      if (answer) {
+        this.#extend(answerLines(name, answer, this.session.thresholdOf(name, this.threshold)));
+      } else this.#warn(`${name}: mock mode cannot simulate this question shape.`);
     }
     this.lastRaw = pretty(mock.mockBody(answers, this.modelName()));
     const estimated = cost.estimate(this.session, this.modelName());
@@ -1243,7 +1247,7 @@ export class App {
       ]),
     );
     for (const [name, answer] of res.answers) {
-      this.#extend(answerLines(name, answer, this.threshold));
+      this.#extend(answerLines(name, answer, this.session.thresholdOf(name, this.threshold)));
     }
     if (res.requestId !== undefined) this.#note(`request_id ${res.requestId}`);
     this.lastRaw = pretty(res.raw);

@@ -83,7 +83,13 @@ export function checkText(text: string): Parsed<string> {
 /** `3 questions: is_urgent (noul), department (choice)` — enough to see the parse landed right. */
 function describe(session: Session): string {
   const n = session.questions.length;
-  const kinds = session.questions.map(([name, q]) => `${name} (${q.kind})`).join(", ");
+  const kinds = session.questions
+    .map(([name, q]) => {
+      const bar = session.bar(name);
+      if (bar === undefined || q.kind === "raw") return `${name} (${q.kind})`;
+      return `${name} (${q.kind}, ${q.kind === "noul" ? "@threshold" : "@confidence"} ${String(bar)})`;
+    })
+    .join(", ");
   const head = `${n} question${n === 1 ? "" : "s"}${kinds === "" ? "" : `: ${kinds}`}`;
   if (session.stateIsEmpty()) return `${head}\nno state — pass --state <text> before sending`;
   const turns = session.turns();
@@ -115,11 +121,19 @@ export function liveAnswers(session: Session, response: SystemOneResponse): Answ
   return session.questions.map(([name]) => [name, response.answers.get(name)] as Answered);
 }
 
-/** The answer page: the same bars and labels the REPL draws, minus the colour. */
-export function answersText(answers: readonly Answered[], threshold: number): string {
+/**
+ * The answer page: the same bars and labels the REPL draws, minus the colour. With the session,
+ * a noul that carries its own `@threshold` is read at that instead of `threshold`.
+ */
+export function answersText(
+  answers: readonly Answered[],
+  threshold: number,
+  session?: Session,
+): string {
   const out: string[] = [];
   for (const [name, answer] of answers) {
-    if (answer) out.push(linesText(answerLines(name, answer, threshold)));
+    const at = session === undefined ? threshold : session.thresholdOf(name, threshold);
+    if (answer) out.push(linesText(answerLines(name, answer, at)));
     else out.push(`  ${name}: no answer came back for this question.`);
   }
   return `${out.join("\n")}\n`;

@@ -467,7 +467,7 @@ function previewLines(
   const out: Line[] = [line([dim("  simulated answers — the shape is real, the numbers are not")])];
   for (const [name, q] of session.questions) {
     const answer = mock.answer(session.state, name, questionToJson(q));
-    if (answer) out.push(...answerLines(name, answer, threshold));
+    if (answer) out.push(...answerLines(name, answer, session.thresholdOf(name, threshold)));
     else out.push(line([dim(`  ${name}: no simulation for this question shape`)]));
   }
   return out;
@@ -505,6 +505,8 @@ function hintFor(tag: Tag, belowRule: boolean): string {
       return "raw — a JSON object sent as it is; it needs a `type`";
     case "json":
       return "continues the raw JSON above";
+    case "bar":
+      return "a bar — @threshold is where a noul reads as yes; @confidence is how sure a choice or score must be to act on";
     case "stray":
       return "this line could not be placed";
   }

@@ -17,6 +17,7 @@ import * as evaluate from "../repl/evaluate.js";
 import { errorLines } from "../repl/format.js";
 import * as headless from "../repl/headless.js";
 import * as presets from "../repl/presets.js";
+import * as sketch from "../repl/sketch.js";
 import type { Session } from "../repl/session.js";
 import { linesText } from "../tui/style.js";
 import { SKILL_MD } from "./skill.js";
@@ -201,6 +202,19 @@ export const TOOLS: readonly Tool[] = [
             "A second page to run over the same cases. The report becomes the difference: " +
             "deltas per question, the cases whose answer flipped, and an exact McNemar test.",
         },
+        calibrate: {
+          type: "boolean",
+          description:
+            "Also return the page with the bars this run supports written in: each noul's " +
+            "best-F1 @threshold, and the lowest @confidence at which a choice or score reaches " +
+            "targetAccuracy. Nothing else on the page changes.",
+        },
+        targetAccuracy: {
+          type: "number",
+          description: "The accuracy a confidence bar has to reach. Defaults to 0.9.",
+          minimum: 0,
+          maximum: 1,
+        },
         json: { type: "boolean", description: "Return the report as JSON instead of a table." },
       },
       required: ["page", "cases"],
@@ -322,7 +336,7 @@ async function ask(args: JsonObject, host: Host): Promise<Result> {
     return text(headless.answersJson(outcome.answers, model, outcome.raw));
   }
   const body =
-    headless.answersText(outcome.answers, threshold) +
+    headless.answersText(outcome.answers, threshold, session) +
     headless.usageText(session, model, ratesArg(args, host), outcome.usage);
   return text(host.live ? body : body + SIMULATED);
 }
@@ -346,10 +360,43 @@ async function score(args: JsonObject, host: Host): Promise<Result> {
   const cases = parsed.value;
   if (cases.length === 0) throw new ArgumentError("cases is empty: nothing to score.");
 
+  const calibrating = boolArg(args, "calibrate", false);
+  const target = numberArg(args, "targetAccuracy", evaluate.DEFAULT_TARGET);
+  if (target < 0 || target > 1) throw new ArgumentError("targetAccuracy must be from 0 to 1.");
+  const page = stringArg(args, "page");
+  if (calibrating && page.trimStart().startsWith("{")) {
+    throw new ArgumentError(
+      "calibrate needs a .jev page: a request body has nowhere to keep a bar.",
+    );
+  }
+
   const outcomes = await evaluate.run(session, cases, (one) => host.ask(one), concurrency);
   const report = evaluate.report(session, cases, outcomes, { model, threshold, rates });
-  if (boolArg(args, "json", false)) return text(`${pretty(evaluate.reportJson(report))}\n`);
-  const body = `${linesText(evaluate.reportLines(report))}\n`;
+  const calibration =
+    calibrating && report.errors.length === 0
+      ? evaluate.calibrate(session, cases, outcomes, report, target)
+      : undefined;
+  const calibrated = calibration && sketch.setBars(page, calibration.changed);
+  const refused = calibrating && calibration === undefined;
+  const why = evaluate.notCalibrating(report.errors.length);
+
+  if (boolArg(args, "json", false)) {
+    const json = evaluate.reportJson(report) as JsonObject;
+    if (calibration !== undefined) {
+      json["calibration"] = {
+        ...evaluate.calibrationJson(calibration, "page"),
+        text: calibrated ?? page,
+      };
+    }
+    if (refused) json["calibration"] = { refused: why };
+    return text(`${pretty(json)}\n`);
+  }
+  let body = `${linesText(evaluate.reportLines(report))}\n`;
+  if (calibration !== undefined) {
+    body += `\n${linesText(evaluate.calibrationLines(calibration, "the page"))}\n`;
+    body += `\n# the page, calibrated\n\n${calibrated ?? page}`;
+  }
+  if (refused) body += `\n${why}\n`;
   return text(host.live ? body : body + SIMULATED);
 }
 

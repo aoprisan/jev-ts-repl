@@ -81,13 +81,41 @@ export class Session {
   questions: Entry[] = [];
   /** Per-session model override; `undefined` means the client default. */
   model: string | undefined;
+  /**
+   * Each question's decision bar, by name: a noul's threshold, or the confidence a choice or a
+   * score has to reach before it is acted on. It lives on the page and never goes on the wire —
+   * it is what the caller does with the answer, not part of the question.
+   */
+  bars: Map<string, number> = new Map();
 
-  static from(parts: { state: Json; questions: Entry[]; model?: string | undefined }): Session {
+  static from(parts: {
+    state: Json;
+    questions: Entry[];
+    model?: string | undefined;
+    bars?: ReadonlyMap<string, number> | undefined;
+  }): Session {
     const session = new Session();
     session.state = parts.state;
     session.questions = parts.questions;
     session.model = parts.model;
+    if (parts.bars !== undefined) session.bars = new Map(parts.bars);
     return session;
+  }
+
+  /** The bar written for a question, if the page gives it one. */
+  bar(name: string): number | undefined {
+    return this.bars.get(name);
+  }
+
+  /**
+   * The threshold a noul is read at: its own `@threshold` when the page has one, `fallback` — the
+   * session-wide `:threshold` or `--threshold` — when it does not. The question's own bar wins
+   * because it is the more specific of the two: someone wrote it down for this question.
+   */
+  thresholdOf(name: string, fallback: number): number {
+    const question = this.questions.find(([n]) => n === name)?.[1];
+    const bar = this.bars.get(name);
+    return question?.kind === "noul" && bar !== undefined ? bar : fallback;
   }
 
   stateIsEmpty(): boolean {
@@ -147,6 +175,8 @@ export class Session {
   insert(name: string, question: Question): boolean {
     const at = this.questions.findIndex(([n]) => n === name);
     if (at >= 0) {
+      // A threshold means nothing to a choice, nor a confidence bar to a noul.
+      if (this.questions[at]?.[1].kind !== question.kind) this.bars.delete(name);
       this.questions[at] = [name, question];
       return true;
     }
@@ -157,6 +187,7 @@ export class Session {
   remove(name: string): boolean {
     const before = this.questions.length;
     this.questions = this.questions.filter(([n]) => n !== name);
+    this.bars.delete(name);
     return this.questions.length !== before;
   }
 
@@ -185,6 +216,7 @@ export class Session {
       state: this.state,
       questions: this.questions.map(([name, q]) => [name, q] as Entry),
       model: this.model,
+      bars: this.bars,
     });
   }
 }

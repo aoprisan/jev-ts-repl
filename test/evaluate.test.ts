@@ -833,3 +833,163 @@ describe("comparing two pages", () => {
     ]);
   });
 });
+
+// ---- the page's own bars, and writing them back --------------------------------------------------
+
+describe("a page that carries its own threshold", () => {
+  const barred = (): Session => {
+    const s = session();
+    s.bars.set("is_urgent", 0.8);
+    return s;
+  };
+
+  it("stars and scores the page's threshold, not the run's", () => {
+    const s = barred();
+    const report = evaluate.report(
+      s,
+      cases(URGENT.join("\n"), s),
+      [0.9, 0.7, 0.3, 0.1].map((p) => answered({ is_urgent: noul(p) })),
+      { model: "jev-latest", threshold: 0.5, rates: undefined },
+    );
+    const urgent = question<"noul">(report, "is_urgent");
+    expect(urgent.threshold).toBe(0.8);
+    expect(urgent.accuracy).toBe(0.5);
+    expect(linesText(evaluate.reportLines(report))).toMatch(/0\.80 \*\s+0\.50/);
+    expect(linesText(evaluate.reportLines(report))).not.toContain("0.50 *");
+    const json = evaluate.reportJson(report) as Record<
+      string,
+      Record<string, Record<string, Json>>
+    >;
+    expect(json["threshold"]).toBe(0.5);
+    expect(Object.keys(json["questions"]?.["is_urgent"] ?? {}).slice(0, 5)).toEqual([
+      "kind",
+      "cases",
+      "brier",
+      "threshold",
+      "accuracy",
+    ]);
+  });
+
+  it("compares each page at its own threshold", () => {
+    const a = session();
+    const b = barred();
+    const parsed = evaluate.parseCompareCases(URGENT.join("\n"), a, b, LABELS);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const [left, right] = parsed.value;
+    const outcomes = [0.9, 0.7, 0.3, 0.1].map((p) => answered({ is_urgent: noul(p) }));
+    const comparison = evaluate.compare(
+      { label: "a", session: a, cases: left, outcomes, model: "m" },
+      { label: "b", session: b, cases: right, outcomes, model: "m" },
+      { threshold: 0.5, rates: undefined },
+    );
+    const urgent = comparison.questions[0];
+    expect(urgent?.metrics[0]).toMatchObject({ key: "threshold", a: 0.5, b: 0.8 });
+    // 0.7 is a yes at 0.5 and a no at 0.8, and the case expects a yes.
+    expect(urgent?.flips).toEqual([
+      { case: 2, expected: true, a: true, b: false, status: "broke" },
+    ]);
+  });
+});
+
+describe("calibration", () => {
+  const lines = [
+    '{"state": "a", "expect": {"is_urgent": true, "department": "billing", "frustration": 0}}',
+    '{"state": "b", "expect": {"is_urgent": true, "department": "billing", "frustration": 1}}',
+    '{"state": "c", "expect": {"is_urgent": false, "department": "technical", "frustration": 2}}',
+    '{"state": "d", "expect": {"is_urgent": false, "department": "sales", "frustration": 2}}',
+  ];
+  const outcomes = [
+    answered({
+      is_urgent: noul(0.9),
+      department: choice("billing", 0.9),
+      frustration: score(1, 0.3),
+    }),
+    answered({
+      is_urgent: noul(0.65),
+      department: choice("billing", 0.72),
+      frustration: score(1, 0.3),
+    }),
+    answered({
+      is_urgent: noul(0.55),
+      department: choice("technical", 0.66),
+      frustration: score(2, 0.3),
+    }),
+    answered({
+      is_urgent: noul(0.2),
+      department: choice("billing", 0.4),
+      frustration: score(0, 0.3),
+    }),
+  ];
+
+  function calibrated(target: number, s: Session = session()): evaluate.Calibration {
+    const parsed = cases(lines.join("\n"), s);
+    const report = evaluate.report(s, parsed, outcomes, {
+      model: "jev-latest",
+      threshold: 0.5,
+      rates: undefined,
+    });
+    return evaluate.calibrate(s, parsed, outcomes, report, target);
+  }
+
+  it("takes a noul's best-F1 threshold and the lowest confidence bar that reaches the target", () => {
+    const c = calibrated(0.9);
+    const [urgent, department, frustration] = c.questions;
+    expect(urgent).toMatchObject({ name: "is_urgent", bar: 0.6, was: undefined, f1: 1 });
+    // At 0.45 the 0.4 billing miss is gone and the three that are left are right.
+    expect(department).toMatchObject({ bar: 0.45, accuracy: 1, coverage: 0.75 });
+    expect(frustration).toMatchObject({
+      bar: undefined,
+      reason: "no confidence bar reaches accuracy 0.90 (best 0.50 at 0.00)",
+    });
+    expect([...c.changed]).toEqual([
+      ["is_urgent", 0.6],
+      ["department", 0.45],
+    ]);
+  });
+
+  it("prints the cuts as the short decimals they are", () => {
+    expect(evaluate.CALIBRATION_CUTS.map(String).slice(0, 4)).toEqual(["0", "0.05", "0.1", "0.15"]);
+    expect(evaluate.CALIBRATION_CUTS).toHaveLength(20);
+    expect(String(evaluate.CALIBRATION_CUTS[13])).toBe("0.65");
+  });
+
+  it("leaves a bar that is already right alone, and says so", () => {
+    const s = session();
+    s.bars.set("is_urgent", 0.6);
+    const c = calibrated(0.5, s);
+    expect(c.questions[0]).toMatchObject({ bar: 0.6, was: 0.6 });
+    expect(c.changed.has("is_urgent")).toBe(false);
+    const text = linesText(evaluate.calibrationLines(c, "triage.jev"));
+    expect(text).toMatch(/is_urgent\s+@threshold 0\.6\s+unchanged\s+f1 1\.00/);
+    // At a target of 0.5 every answer is good enough, so the bar is 0: act on all of them.
+    expect(text).toMatch(
+      /department\s+@confidence 0\s+was none\s+accuracy 0\.75 over 1\.00 of cases/,
+    );
+  });
+
+  it("says what it wrote, and what it left alone", () => {
+    const c = calibrated(0.9);
+    const text = linesText(evaluate.calibrationLines(c, "triage.jev"));
+    expect(text).toContain("calibration  target accuracy 0.90");
+    expect(text).toMatch(/frustration\s+left alone\s+no confidence bar reaches accuracy 0\.90/);
+    expect(text).toContain("wrote 2 bars to triage.jev");
+    expect(evaluate.calibrationJson(c, "triage.jev")).toEqual({
+      page: "triage.jev",
+      target: 0.9,
+      written: true,
+      questions: {
+        is_urgent: { kind: "noul", bar: 0.6, was: null, f1: 1 },
+        department: { kind: "choice", bar: 0.45, was: null, accuracy: 1, coverage: 0.75 },
+        frustration: {
+          kind: "score",
+          bar: null,
+          was: null,
+          reason: "no confidence bar reaches accuracy 0.90 (best 0.50 at 0.00)",
+        },
+      },
+    });
+    expect(evaluate.notCalibrating(1)).toBe(
+      "not calibrating: 1 case came back with errors, so the numbers are incomplete.",
+    );
+  });
+});

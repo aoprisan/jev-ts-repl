@@ -32,6 +32,7 @@ export const LESSONS: readonly Lesson[] = [
       "Because a noul is a probability, you pick the threshold: `answer.noul >= 0.8` is a different product decision from `>= 0.5`.",
       "Pick the threshold from the cost of being wrong — a cheap auto-reply can run at 0.5, a refund cannot.",
       "`:threshold 0.8` changes what this REPL calls a yes, so you can watch the same answer flip.",
+      "Once you know the number, keep it with the question: `@threshold 0.8` under a noul in `:sketch` travels with the page, and `jev eval --calibrate` writes one from labelled cases.",
     ],
     tryThis: ":threshold 0.8",
   },

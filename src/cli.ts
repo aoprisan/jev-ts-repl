@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import * as install from "./agent/installer.js";
 import type { Host, Sent } from "./agent/mcp.js";
 import { serve } from "./agent/serve.js";
+import type { JsonObject } from "./json.js";
 import { compact, pretty } from "./json.js";
 import { App } from "./repl/app.js";
 import type { Msg } from "./repl/app.js";
@@ -29,9 +30,10 @@ import * as headless from "./repl/headless.js";
 import { errorLines } from "./repl/format.js";
 import type { Session } from "./repl/session.js";
 import { parseTurn } from "./repl/session.js";
+import * as sketch from "./repl/sketch.js";
 import { render } from "./repl/ui.js";
 import { Terminal } from "./tui/terminal.js";
-import { linesText } from "./tui/style.js";
+import { blankLine, linesText } from "./tui/style.js";
 import { Client } from "./typesafe/client.js";
 import { API_KEY_ENV, VERSION } from "./typesafe/constants.js";
 import { decodeSystemOne, makeSystemOneResponse } from "./typesafe/responses.js";
@@ -72,6 +74,8 @@ Options for eval
   --min-accuracy <0-1>   exit 1 when a scored question falls below this
   --compare <page>       run a second page over the same cases and report the difference
   --fail-on-regression   with --compare, exit 1 when the second page is significantly worse
+  --calibrate            write the thresholds and confidence bars the run supports into the page
+  --target-accuracy <0-1>  the accuracy a confidence bar has to reach (default 0.9)
 
 Exit status is 0 when it worked, 1 when the call or the file did not, 2 when the
 command line did not parse.
@@ -98,6 +102,9 @@ interface Options {
   /** `jev eval --compare`: the second page, and whether a regression fails the run. */
   compare?: string;
   failOnRegression: boolean;
+  /** `jev eval --calibrate`: write the bars back into the page, aiming at this accuracy. */
+  calibrate: boolean;
+  targetAccuracy?: number;
 }
 
 /** A usage error: the command line itself did not make sense. */
@@ -116,6 +123,7 @@ const FLAGS_WITH_VALUES = [
   "--max-cost",
   "--min-accuracy",
   "--compare",
+  "--target-accuracy",
 ];
 
 /**
@@ -131,6 +139,7 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
     json: false,
     concurrency: 4,
     failOnRegression: false,
+    calibrate: false,
     rates: cost.ratesFromEnv(env[cost.PRICE_ENV]),
   };
   let file: string | undefined;
@@ -213,6 +222,17 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
       case "--fail-on-regression":
         options.failOnRegression = true;
         break;
+      case "--calibrate":
+        options.calibrate = true;
+        break;
+      case "--target-accuracy": {
+        const target = Number(valueOf());
+        if (!Number.isFinite(target) || target < 0 || target > 1) {
+          throw new UsageError("--target-accuracy takes a number from 0 to 1.");
+        }
+        options.targetAccuracy = target;
+        break;
+      }
       case "--mock":
         options.mock = true;
         break;
@@ -263,6 +283,17 @@ function checkEvalOptions(options: Options): void {
   }
   if (options.failOnRegression && options.compare === undefined) {
     throw new UsageError("--fail-on-regression needs --compare: there is nothing to regress from.");
+  }
+  if (options.calibrate && options.compare !== undefined) {
+    throw new UsageError("--calibrate and --compare do not mix: calibrate one page at a time.");
+  }
+  if (options.calibrate && options.file === "-") {
+    throw new UsageError(
+      "--calibrate writes the page back, so the page has to be a file, not stdin.",
+    );
+  }
+  if (options.targetAccuracy !== undefined && !options.calibrate) {
+    throw new UsageError("--target-accuracy only applies with --calibrate.");
   }
 }
 
@@ -350,6 +381,7 @@ function liveAsk(
  */
 async function runEval(
   session: Session,
+  page: string,
   options: Options,
   model: string,
   client: Client | undefined,
@@ -387,15 +419,50 @@ async function runEval(
     threshold: options.threshold,
     rates: options.rates,
   });
-  if (options.json) out(`${pretty(evaluate.reportJson(report))}\n`);
-  else out(`${linesText(evaluate.reportLines(report))}\n`);
+  let code = report.errors.length > 0 ? 1 : 0;
+
+  // Calibration writes before it prints, so the report never claims a file it failed to write.
+  const calibration =
+    options.calibrate && report.errors.length === 0
+      ? evaluate.calibrate(
+          session,
+          cases,
+          outcomes,
+          report,
+          options.targetAccuracy ?? evaluate.DEFAULT_TARGET,
+        )
+      : undefined;
+  let written = true;
+  if (calibration !== undefined && calibration.changed.size > 0) {
+    try {
+      writeFileSync(options.file, sketch.setBars(page, calibration.changed));
+    } catch (e) {
+      err(`jev eval: could not write ${options.file}: ${e instanceof Error ? e.message : e}\n`);
+      written = false;
+      code = 1;
+    }
+  }
+  const shown = written ? calibration : undefined;
+
+  if (options.json) {
+    const json = evaluate.reportJson(report) as JsonObject;
+    if (shown !== undefined) json["calibration"] = evaluate.calibrationJson(shown, options.file);
+    out(`${pretty(json)}\n`);
+  } else {
+    const lines = evaluate.reportLines(report);
+    if (shown !== undefined)
+      lines.push(blankLine(), ...evaluate.calibrationLines(shown, options.file));
+    out(`${linesText(lines)}\n`);
+  }
   if (client === undefined) {
     err(
       "Simulated answers: deterministic noise, not judgement. Set TYPESAFE_API_KEY for real ones.\n",
     );
   }
+  if (options.calibrate && report.errors.length > 0) {
+    err(`jev eval: ${evaluate.notCalibrating(report.errors.length)}\n`);
+  }
 
-  let code = report.errors.length > 0 ? 1 : 0;
   const bar = options.minAccuracy;
   if (bar !== undefined) {
     for (const [name, accuracy] of evaluate.belowBar(report, bar)) {
@@ -613,7 +680,13 @@ async function runCommand(
   }
   const model = session.model ?? client?.defaultModel ?? "jev-latest";
 
-  if (command === "eval") return runEval(session, options, model, client, out, err);
+  if (command === "eval") {
+    if (options.calibrate && text.trimStart().startsWith("{")) {
+      err("jev eval: --calibrate needs a .jev page: a request body has nowhere to keep a bar.\n");
+      return 1;
+    }
+    return runEval(session, text, options, model, client, out, err);
+  }
 
   switch (command) {
     case "json":
@@ -640,7 +713,7 @@ async function runCommand(
     const answers = headless.mockAnswers(session);
     if (options.json) out(headless.answersJson(answers, model));
     else {
-      out(headless.answersText(answers, options.threshold));
+      out(headless.answersText(answers, options.threshold, session));
       out(headless.usageText(session, model, options.rates, undefined));
       err(
         "Simulated answers: deterministic noise, not judgement. Set TYPESAFE_API_KEY for real ones.\n",
@@ -656,7 +729,7 @@ async function runCommand(
     const answers = headless.liveAnswers(session, response);
     if (options.json) out(headless.answersJson(answers, model, response.raw));
     else {
-      out(headless.answersText(answers, options.threshold));
+      out(headless.answersText(answers, options.threshold, session));
       out(headless.usageText(session, model, options.rates, response.usage));
     }
     return 0;
