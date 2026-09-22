@@ -1,6 +1,8 @@
 /** The HTTP client. */
 
 import type { Json, JsonObject } from "../json.js";
+import { pretty } from "../json.js";
+import { cassetteKey, readCassette, writeCassette } from "./cassette.js";
 import {
   API_KEY_ENV,
   BASE_URL_ENV,
@@ -9,6 +11,8 @@ import {
   DEFAULT_MODEL_ENV,
   DEFAULT_TIMEOUT_MS,
   MODELS_PATH,
+  RECORD_ENV,
+  REPLAY_ENV,
   RETRY_COUNT_HEADER,
   RUNTIME_HEADER,
   SDK_HEADER,
@@ -61,6 +65,17 @@ export interface ClientOptions {
   headers?: Record<string, string>;
   /** Replace the `fetch` implementation (tests, proxies, instrumentation). */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Write every successful `systemOne` response body to `<dir>/<key>.json` (else
+   * `TYPESAFE_RECORD`). Node only.
+   */
+  record?: string;
+  /**
+   * Answer `systemOne` from `<dir>/<key>.json` and never touch the network (else
+   * `TYPESAFE_REPLAY`). No API key is needed; a request with no recording throws
+   * {@link ReplayMissError}. Node only.
+   */
+  replay?: string;
 }
 
 /** Per-call overrides. */
@@ -167,15 +182,37 @@ export class Client {
   readonly #headers: Record<string, string>;
   readonly #protected: Record<string, string>;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #record: string | undefined;
+  readonly #replay: string | undefined;
 
   constructor(options: ClientOptions = {}) {
+    // Either option set by hand decides the mode; the environment only speaks when neither is.
+    const explicit = options.record !== undefined || options.replay !== undefined;
+    const record = explicit ? options.record : env(RECORD_ENV);
+    const replay = explicit ? options.replay : env(REPLAY_ENV);
+    if (record !== undefined && replay !== undefined) {
+      throw new ConfigError(
+        explicit
+          ? "record and replay cannot both be set: a client either records or replays."
+          : `${RECORD_ENV} and ${REPLAY_ENV} cannot both be set: a client either records or replays.`,
+      );
+    }
+    for (const [name, dir] of [
+      ["record", record],
+      ["replay", replay],
+    ] as const) {
+      if (dir !== undefined && dir.trim() === "") {
+        throw new ConfigError(`${name} must be a directory, got an empty string.`);
+      }
+    }
+
     const apiKey = options.apiKey ?? env(API_KEY_ENV);
-    if (apiKey === undefined || apiKey.trim() === "") {
+    if (replay === undefined && (apiKey === undefined || apiKey.trim() === "")) {
       throw new ConfigError(
         `No API key was provided. Pass apiKey or set the ${API_KEY_ENV} environment variable.`,
       );
     }
-    if (/[^\t\x20-\x7e\x80-\xff]/.test(apiKey)) {
+    if (apiKey !== undefined && /[^\t\x20-\x7e\x80-\xff]/.test(apiKey)) {
       throw new ConfigError("The API key contains characters not allowed in a header.");
     }
     const baseUrl = (options.baseUrl ?? env(BASE_URL_ENV) ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
@@ -189,9 +226,11 @@ export class Client {
     this.#retry = retry;
     this.#headers = { ...options.headers };
     this.#fetch = options.fetch ?? globalThis.fetch;
+    this.#record = record;
+    this.#replay = replay;
     const ident = `${SDK_NAME}/${VERSION}`;
     this.#protected = {
-      authorization: `Bearer ${apiKey}`,
+      authorization: `Bearer ${apiKey ?? ""}`,
       accept: "application/json",
       "user-agent": ident,
       [SDK_HEADER]: ident,
@@ -209,7 +248,22 @@ export class Client {
     return this.#model;
   }
 
-  /** Ask typed questions about `state` (a string, or any JSON). */
+  /** The directory this client records into, if it records. */
+  get recordDir(): string | undefined {
+    return this.#record;
+  }
+
+  /** The directory this client replays from, if it replays. */
+  get replayDir(): string | undefined {
+    return this.#replay;
+  }
+
+  /**
+   * Ask typed questions about `state` (a string, or any JSON).
+   *
+   * When recording, the response body is written under its {@link cassetteKey}; when replaying,
+   * it is read from there instead and nothing is sent.
+   */
   async systemOne(
     state: Json,
     questions: Questions,
@@ -223,7 +277,23 @@ export class Client {
     if (!("questions" in extra)) body["questions"] = questionsToJson(questions);
     Object.assign(body, extra);
 
+    if (this.#replay !== undefined) {
+      const key = await cassetteKey(body);
+      const text = await readCassette(this.#replay, key);
+      const meta: ResponseMeta = { status: 200, headers: {}, attempts: 0 };
+      return this.#decodeSystemOne(text, meta, `replay ${this.#replay}`);
+    }
+
     const { text, meta, endpoint } = await this.#execute("POST", SYSTEM_ONE_PATH, body, options);
+    const response = this.#decodeSystemOne(text, meta, endpoint);
+    if (this.#record !== undefined) {
+      // The same bytes `jev eval --cache` keeps, so either one can read the other's directory.
+      await writeCassette(this.#record, await cassetteKey(body), `${pretty(response.raw)}\n`);
+    }
+    return response;
+  }
+
+  #decodeSystemOne(text: string, meta: ResponseMeta, endpoint: string): SystemOneResponse {
     try {
       const decoded = decodeSystemOne(text);
       return makeSystemOneResponse(
@@ -242,6 +312,11 @@ export class Client {
   models(): { list(options?: CallOptions): Promise<ListModelsResponse> } {
     return {
       list: async (options: CallOptions = {}): Promise<ListModelsResponse> => {
+        if (this.#replay !== undefined) {
+          throw new ConfigError(
+            "models().list() is not recorded, and a replaying client never sends a request.",
+          );
+        }
         const { text, meta, endpoint } = await this.#execute(
           "GET",
           MODELS_PATH,

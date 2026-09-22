@@ -39,6 +39,14 @@ b.jev --cases cases.jsonl` runs both pages over the same labelled states and rep
   once per prefix of the conversation and each prefix is scored as a case. The noul's block then
   says when it noticed: how many threads it caught on time, early, late or never, how many false
   alarms, and the mean latency in turns. A case without `by_turn` reads exactly as before.
+- **Record and replay.** `TYPESAFE_RECORD=<dir>` (or `new Client({ record: dir })`) writes each
+  successful `systemOne` response body to `<dir>/<key>.json`; `TYPESAFE_REPLAY=<dir>` (or
+  `{ replay: dir }`) answers from there with no network and no API key. A request with no
+  recording throws the new `ReplayMissError`, with the `key` and `path` it looked for, and never
+  falls back to a live call. Setting both is a `ConfigError`.
+- New `cassetteKey` on both exports: the SHA-256 of a compact request body, in hex. `jev eval
+--cache` now uses it too, unchanged, so a cassette directory and an eval cache are
+  interchangeable. A test pins the digest of a fixture, for the other SDKs to match.
 
 ## 0.6.0
 

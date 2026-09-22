@@ -6,6 +6,10 @@ export const API_KEY_ENV = "TYPESAFE_API_KEY";
 export const BASE_URL_ENV = "TYPESAFE_BASE_URL";
 /** Environment variable for the default model. */
 export const DEFAULT_MODEL_ENV = "TYPESAFE_DEFAULT_MODEL";
+/** Environment variable for a directory to record live responses into. */
+export const RECORD_ENV = "TYPESAFE_RECORD";
+/** Environment variable for a directory to replay responses from, with no network. */
+export const REPLAY_ENV = "TYPESAFE_REPLAY";
 
 /** Default API base URL. */
 export const DEFAULT_BASE_URL = "https://api.typesafe.ai";

@@ -1,17 +1,25 @@
 /** The client: what goes on the wire, what comes back, and what happens when it goes wrong. */
 
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { Json } from "../src/json.js";
+import { compact, pretty } from "../src/json.js";
 import {
   ApiError,
   Client,
   ConfigError,
   ConnectionError,
   InvalidRequestError,
+  ReplayMissError,
   ResponseValidationError,
   TimeoutError,
   backoffMs,
+  cassetteKey,
   choice,
   defaultRetryPolicy,
   extractMessage,
@@ -387,5 +395,179 @@ describe("errors and retries", () => {
     const error = new ApiError(503, undefined, {}, "GET http://x/v1/models");
     expect(error.message).toBe("GET http://x/v1/models: 503 status code (no body)");
     expect(error.kind).toBe("InternalServer");
+  });
+});
+
+/** A scratch directory for one test, removed afterwards whatever happens. */
+async function inTempDir(body: (dir: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "jev-cassette-"));
+  try {
+    await body(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Run `body` with these environment variables set (or unset, for `undefined`), then restore. */
+function withEnv<T>(vars: Record<string, string | undefined>, body: () => T): T {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const put = (values: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(values)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  put(vars);
+  try {
+    return body();
+  } finally {
+    put(saved);
+  }
+}
+
+const URGENT = { is_urgent: noul("The message conveys urgency") };
+
+describe("record and replay", () => {
+  it("pins the cassette key the other SDKs share", async () => {
+    // The Rust SDK hashes the same fixture to the same digest; change one, change both.
+    const body = {
+      state: "The payout failed again.",
+      model: "jev-latest",
+      questions: questionsToJson(URGENT),
+    };
+    expect(compact(body)).toBe(
+      '{"state":"The payout failed again.","model":"jev-latest","questions":{"is_urgent":{"type":"noul","instructions":"The message conveys urgency"}}}',
+    );
+    const key = await cassetteKey(body);
+    expect(key).toBe("4bb6a561cd7ce28500dc6aa8fc821771e45e4f811f1195c2441263651a7dca55");
+    // The same key `jev eval --cache` has always used: SHA-256 of the compact body.
+    expect(key).toBe(createHash("sha256").update(compact(body)).digest("hex"));
+  });
+
+  it("records each successful response under its key", async () => {
+    await inTempDir(async (root) => {
+      const dir = join(root, "cassettes", "nested");
+      const { fetch } = stubFetch([json(ANSWERS)]);
+      await client(fetch, { record: dir }).systemOne("The payout failed again.", URGENT);
+      const key = await cassetteKey({
+        state: "The payout failed again.",
+        model: "jev-latest",
+        questions: questionsToJson(URGENT),
+      });
+      expect(readFileSync(join(dir, `${key}.json`), "utf8")).toBe(`${pretty(ANSWERS)}\n`);
+    });
+  });
+
+  it("does not record a failed call", async () => {
+    await inTempDir(async (dir) => {
+      const { fetch } = stubFetch([json({ error: "nope" }, { status: 400 })]);
+      await expect(
+        client(fetch, { record: dir }).systemOne("The payout failed again.", URGENT),
+      ).rejects.toThrow(ApiError);
+      const key = await cassetteKey({
+        state: "The payout failed again.",
+        model: "jev-latest",
+        questions: questionsToJson(URGENT),
+      });
+      expect(existsSync(join(dir, `${key}.json`))).toBe(false);
+    });
+  });
+
+  it("replays what was recorded, with no network and no API key", async () => {
+    await inTempDir(async (dir) => {
+      const recording = stubFetch([json(ANSWERS)]);
+      const live = await client(recording.fetch, { record: dir }).systemOne(
+        "The payout failed again.",
+        URGENT,
+      );
+
+      const replaying = stubFetch([]);
+      const res = await withEnv({ TYPESAFE_API_KEY: undefined }, () =>
+        new Client({ replay: dir, fetch: replaying.fetch }).systemOne(
+          "The payout failed again.",
+          URGENT,
+        ),
+      );
+      expect(replaying.calls).toHaveLength(0);
+      expect(res.raw).toEqual(live.raw);
+      expect(res.noul("is_urgent")?.noul).toBe(0.999);
+      expect(res.meta.attempts).toBe(0);
+    });
+  });
+
+  it("throws a replay miss rather than sending anything", async () => {
+    await inTempDir(async (dir) => {
+      const { fetch, calls } = stubFetch([json(ANSWERS)]);
+      const replaying = client(fetch, { replay: dir });
+      const error = await replaying
+        .systemOne("Something never recorded.", URGENT)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ReplayMissError);
+      const miss = error as ReplayMissError;
+      expect(miss.key).toMatch(/^[0-9a-f]{64}$/);
+      expect(miss.path).toBe(join(dir, `${miss.key}.json`));
+      expect(miss.message).toContain(miss.path);
+      expect(calls).toHaveLength(0);
+      await expect(replaying.models().list()).rejects.toThrow(ConfigError);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  it("keys on the whole body, so a different model misses", async () => {
+    await inTempDir(async (dir) => {
+      const { fetch } = stubFetch([json(ANSWERS)]);
+      await client(fetch, { record: dir }).systemOne("The payout failed again.", URGENT);
+      const replaying = client(stubFetch([]).fetch, { replay: dir });
+      await expect(
+        replaying.systemOne("The payout failed again.", URGENT, { model: "jev-other" }),
+      ).rejects.toThrow(ReplayMissError);
+    });
+  });
+
+  it("reports a recording that does not decode", async () => {
+    await inTempDir(async (dir) => {
+      const key = await cassetteKey({
+        state: "The payout failed again.",
+        model: "jev-latest",
+        questions: questionsToJson(URGENT),
+      });
+      writeFileSync(join(dir, `${key}.json`), '{"answers": 3}');
+      await expect(
+        client(stubFetch([]).fetch, { replay: dir }).systemOne("The payout failed again.", URGENT),
+      ).rejects.toThrow(ResponseValidationError);
+    });
+  });
+
+  it("reads the directories from the environment", () => {
+    const c = withEnv({ TYPESAFE_RECORD: "rec", TYPESAFE_REPLAY: undefined }, () =>
+      client(stubFetch([]).fetch),
+    );
+    expect(c.recordDir).toBe("rec");
+    expect(c.replayDir).toBeUndefined();
+    const r = withEnv({ TYPESAFE_RECORD: undefined, TYPESAFE_REPLAY: "tape" }, () =>
+      client(stubFetch([]).fetch),
+    );
+    expect(r.replayDir).toBe("tape");
+  });
+
+  it("lets an explicit option win over the environment", () => {
+    const c = withEnv({ TYPESAFE_RECORD: "rec", TYPESAFE_REPLAY: undefined }, () =>
+      client(stubFetch([]).fetch, { replay: "tape" }),
+    );
+    expect(c.replayDir).toBe("tape");
+    expect(c.recordDir).toBeUndefined();
+  });
+
+  it("refuses to record and replay at once", () => {
+    expect(() => client(stubFetch([]).fetch, { record: "a", replay: "b" })).toThrow(ConfigError);
+    expect(() =>
+      withEnv({ TYPESAFE_RECORD: "a", TYPESAFE_REPLAY: "b" }, () => client(stubFetch([]).fetch)),
+    ).toThrow(/TYPESAFE_RECORD and TYPESAFE_REPLAY/);
+  });
+
+  it("still needs an API key to record", () => {
+    expect(() =>
+      withEnv({ TYPESAFE_API_KEY: undefined }, () => new Client({ record: "rec" })),
+    ).toThrow(ConfigError);
   });
 });
