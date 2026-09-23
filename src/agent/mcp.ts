@@ -17,6 +17,7 @@ import * as evaluate from "../repl/evaluate.js";
 import { errorLines } from "../repl/format.js";
 import * as headless from "../repl/headless.js";
 import * as presets from "../repl/presets.js";
+import * as sketch from "../repl/sketch.js";
 import type { Session } from "../repl/session.js";
 import { linesText } from "../tui/style.js";
 import { SKILL_MD } from "./skill.js";
@@ -195,6 +196,25 @@ export const TOOLS: readonly Tool[] = [
           description: "How many cases are in the air at once. Defaults to 4.",
           minimum: 1,
         },
+        compare: {
+          type: "string",
+          description:
+            "A second page to run over the same cases. The report becomes the difference: " +
+            "deltas per question, the cases whose answer flipped, and an exact McNemar test.",
+        },
+        calibrate: {
+          type: "boolean",
+          description:
+            "Also return the page with the bars this run supports written in: each noul's " +
+            "best-F1 @threshold, and the lowest @confidence at which a choice or score reaches " +
+            "targetAccuracy. Nothing else on the page changes.",
+        },
+        targetAccuracy: {
+          type: "number",
+          description: "The accuracy a confidence bar has to reach. Defaults to 0.9.",
+          minimum: 0,
+          maximum: 1,
+        },
         json: { type: "boolean", description: "Return the report as JSON instead of a table." },
       },
       required: ["page", "cases"],
@@ -316,17 +336,13 @@ async function ask(args: JsonObject, host: Host): Promise<Result> {
     return text(headless.answersJson(outcome.answers, model, outcome.raw));
   }
   const body =
-    headless.answersText(outcome.answers, threshold) +
+    headless.answersText(outcome.answers, threshold, session) +
     headless.usageText(session, model, ratesArg(args, host), outcome.usage);
   return text(host.live ? body : body + SIMULATED);
 }
 
 async function score(args: JsonObject, host: Host): Promise<Result> {
   const { session, model } = sessionArg(args, host);
-  const parsed = evaluate.parseCases(stringArg(args, "cases"), session);
-  if (!parsed.ok) throw new ArgumentError(parsed.error);
-  const cases = parsed.value;
-  if (cases.length === 0) throw new ArgumentError("cases is empty: nothing to score.");
   const threshold = numberArg(args, "threshold", 0.5);
   if (threshold < 0 || threshold > 1) throw new ArgumentError("threshold must be from 0 to 1.");
   const concurrency = numberArg(args, "concurrency", 4);
@@ -334,11 +350,88 @@ async function score(args: JsonObject, host: Host): Promise<Result> {
     throw new ArgumentError("concurrency must be a whole number of 1 or more.");
   }
   const rates = ratesArg(args, host);
+  const second = args["compare"];
+  if (second !== undefined && second !== null) {
+    return compared(args, host, session, model, threshold, concurrency, rates);
+  }
+
+  const parsed = evaluate.parseCases(stringArg(args, "cases"), session);
+  if (!parsed.ok) throw new ArgumentError(parsed.error);
+  const cases = parsed.value;
+  if (cases.length === 0) throw new ArgumentError("cases is empty: nothing to score.");
+
+  const calibrating = boolArg(args, "calibrate", false);
+  const target = numberArg(args, "targetAccuracy", evaluate.DEFAULT_TARGET);
+  if (target < 0 || target > 1) throw new ArgumentError("targetAccuracy must be from 0 to 1.");
+  const page = stringArg(args, "page");
+  if (calibrating && page.trimStart().startsWith("{")) {
+    throw new ArgumentError(
+      "calibrate needs a .jev page: a request body has nowhere to keep a bar.",
+    );
+  }
 
   const outcomes = await evaluate.run(session, cases, (one) => host.ask(one), concurrency);
   const report = evaluate.report(session, cases, outcomes, { model, threshold, rates });
-  if (boolArg(args, "json", false)) return text(`${pretty(evaluate.reportJson(report))}\n`);
-  const body = `${linesText(evaluate.reportLines(report))}\n`;
+  const calibration =
+    calibrating && report.errors.length === 0
+      ? evaluate.calibrate(session, cases, outcomes, report, target)
+      : undefined;
+  const calibrated = calibration && sketch.setBars(page, calibration.changed);
+  const refused = calibrating && calibration === undefined;
+  const why = evaluate.notCalibrating(report.errors.length);
+
+  if (boolArg(args, "json", false)) {
+    const json = evaluate.reportJson(report) as JsonObject;
+    if (calibration !== undefined) {
+      json["calibration"] = {
+        ...evaluate.calibrationJson(calibration, "page"),
+        text: calibrated ?? page,
+      };
+    }
+    if (refused) json["calibration"] = { refused: why };
+    return text(`${pretty(json)}\n`);
+  }
+  let body = `${linesText(evaluate.reportLines(report))}\n`;
+  if (calibration !== undefined) {
+    body += `\n${linesText(evaluate.calibrationLines(calibration, "the page"))}\n`;
+    body += `\n# the page, calibrated\n\n${calibrated ?? page}`;
+  }
+  if (refused) body += `\n${why}\n`;
+  return text(host.live ? body : body + SIMULATED);
+}
+
+/** `jev_eval` with `compare`: both pages over the same cases, labelled `a` and `b`. */
+async function compared(
+  args: JsonObject,
+  host: Host,
+  a: Session,
+  modelA: string,
+  threshold: number,
+  concurrency: number,
+  rates: cost.Rates | undefined,
+): Promise<Result> {
+  const loaded = headless.load(stringArg(args, "compare"));
+  if (!loaded.ok) throw new ArgumentError(`compare: ${loaded.error}`);
+  const b = loaded.value;
+  // A model named in the call overrides both pages, the way --model does on the command line.
+  if (typeof args["model"] === "string") b.model = args["model"];
+  const modelB = b.model ?? host.model;
+  const parsed = evaluate.parseCompareCases(stringArg(args, "cases"), a, b, { a: "a", b: "b" });
+  if (!parsed.ok) throw new ArgumentError(parsed.error);
+  const [casesA, casesB] = parsed.value;
+  const ask = (one: Session): Promise<evaluate.Outcome> => host.ask(one);
+  const [outcomesA, outcomesB] = await evaluate.runCompare(
+    { session: a, cases: casesA, ask },
+    { session: b, cases: casesB, ask },
+    concurrency,
+  );
+  const comparison = evaluate.compare(
+    { label: "a", session: a, cases: casesA, outcomes: outcomesA, model: modelA },
+    { label: "b", session: b, cases: casesB, outcomes: outcomesB, model: modelB },
+    { threshold, rates },
+  );
+  if (boolArg(args, "json", false)) return text(`${pretty(evaluate.compareJson(comparison))}\n`);
+  const body = `${linesText(evaluate.compareLines(comparison))}\n`;
   return text(host.live ? body : body + SIMULATED);
 }
 

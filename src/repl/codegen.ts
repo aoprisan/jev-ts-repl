@@ -11,14 +11,28 @@ interface Shaped {
   name: string;
   json: Json;
   kind: string;
+  /** The page's `@threshold` or `@confidence` for this question, when it wrote one down. */
+  bar: number | undefined;
 }
 
 function shape(session: Session): Shaped[] {
   return session.questions.map(([name, question]) => {
     const json = questionToJson(question);
     const kind = isObject(json) && typeof json["type"] === "string" ? json["type"] : "raw";
-    return { name, json, kind };
+    return { name, json, kind, bar: session.bar(name) };
   });
+}
+
+/** What a choice is gated at when the page names no bar: the README's rule of thumb. */
+const CHOICE_GATE = 0.6;
+
+/**
+ * A threshold as code: two decimals, the way it has always been printed, unless that would change
+ * it — a bar someone wrote as `0.625` is `0.625` in the program too.
+ */
+function thresholdLiteral(t: number): string {
+  const fixed = t.toFixed(2);
+  return Number(fixed) === t ? fixed : String(t);
 }
 
 /** A JSON value as a TypeScript literal. */
@@ -106,6 +120,7 @@ function builder(q: Shaped, indent: number): string {
 
 function reader(q: Shaped, threshold: number): string[] {
   const name = q.name;
+  const cut = thresholdLiteral(q.bar ?? threshold);
   const variable = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : `answer_${hashName(name)}`;
   const lookup = JSON.stringify(name);
   switch (q.kind) {
@@ -114,20 +129,34 @@ function reader(q: Shaped, threshold: number): string[] {
         `const ${variable} = res.noul(${lookup});`,
         `if (${variable}) {`,
         "  console.log(",
-        `    \`${name}: \${${variable}.noul.toFixed(2)} -> \${${variable}.noul >= ${threshold.toFixed(2)}}\`,`,
+        `    \`${name}: \${${variable}.noul.toFixed(2)} -> \${${variable}.noul >= ${cut}}\`,`,
         "  );",
         "}",
       ];
     case "choice":
       return [
         `const ${variable} = res.choice(${lookup});`,
-        `if (${variable} && ${variable}.confidence >= 0.6) {`,
+        `if (${variable} && ${variable}.confidence >= ${String(q.bar ?? CHOICE_GATE)}) {`,
         `  console.log(\`${name}: \${${variable}.choice}\`);`,
         `} else if (${variable}) {`,
         `  console.log(\`${name}: unsure (\${${variable}.confidence.toFixed(2)}), send to a human\`);`,
         "}",
       ];
     case "score":
+      if (q.bar !== undefined) {
+        // A score with a bar is gated like a choice: act above it, hand the rest to a person.
+        return [
+          `const ${variable} = res.score(${lookup});`,
+          `if (${variable} && ${variable}.confidence >= ${String(q.bar)}) {`,
+          "  console.log(",
+          `    \`${name}: \${${variable}.score.toFixed(2)} of \${${variable}.legend.size - 1} \` +`,
+          `      \`(confidence \${${variable}.confidence.toFixed(2)})\`,`,
+          "  );",
+          `} else if (${variable}) {`,
+          `  console.log(\`${name}: unsure (\${${variable}.confidence.toFixed(2)}), send to a human\`);`,
+          "}",
+        ];
+      }
       return [
         `const ${variable} = res.score(${lookup});`,
         `if (${variable}) {`,
@@ -140,6 +169,12 @@ function reader(q: Shaped, threshold: number): string[] {
     default:
       return [`// ${name}: a raw question — read it from res.raw`];
   }
+}
+
+/** A float literal Rust reads as an `f64`: `0.7` stays `0.7`, but `1` has to be `1.0`. */
+function rustFloat(n: number): string {
+  const text = String(n);
+  return /[.e]/.test(text) ? text : `${text}.0`;
 }
 
 function hashName(name: string): string {
@@ -227,23 +262,34 @@ function rustBuilder(q: Shaped, indent: number): string {
 
 function rustReader(q: Shaped, threshold: number): string {
   const name = q.name;
+  const cut = thresholdLiteral(q.bar ?? threshold);
   const lookup = JSON.stringify(name);
   switch (q.kind) {
     case "noul":
       return (
         `    let ${name} = res.noul(${lookup}).expect("asked");\n` +
-        `    println!("${name}: {:.2} → {}", ${name}.noul, ${name}.is_yes(${threshold.toFixed(2)}));\n`
+        `    println!("${name}: {:.2} → {}", ${name}.noul, ${name}.is_yes(${cut}));\n`
       );
     case "choice":
       return (
         `    let ${name} = res.choice(${lookup}).expect("asked");\n` +
-        `    if ${name}.confidence >= 0.6 {\n` +
+        `    if ${name}.confidence >= ${rustFloat(q.bar ?? CHOICE_GATE)} {\n` +
         `        println!("${name}: {}", ${name}.choice);\n` +
         `    } else {\n` +
         `        println!("${name}: unsure ({:.2}), send to a human", ${name}.confidence);\n` +
         `    }\n`
       );
     case "score":
+      if (q.bar !== undefined) {
+        return (
+          `    let ${name} = res.score(${lookup}).expect("asked");\n` +
+          `    if ${name}.confidence >= ${rustFloat(q.bar)} {\n` +
+          `        println!("${name}: {:.2} of {} (confidence {:.2})", ${name}.score, ${name}.legend.len() - 1, ${name}.confidence);\n` +
+          `    } else {\n` +
+          `        println!("${name}: unsure ({:.2}), send to a human", ${name}.confidence);\n` +
+          `    }\n`
+        );
+      }
       return (
         `    let ${name} = res.score(${lookup}).expect("asked");\n` +
         `    println!("${name}: {:.2} of {} (confidence {:.2})", ${name}.score, ${name}.legend.len() - 1, ${name}.confidence);\n`

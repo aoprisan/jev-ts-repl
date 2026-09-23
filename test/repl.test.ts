@@ -222,6 +222,31 @@ describe("generated code", () => {
     expect(code, "no json! is needed for plain text").not.toContain("json!(");
   });
 
+  it("gates on the page's own bars instead of the hard-coded ones", () => {
+    const a = app();
+    a.exec(":preset triage");
+    const plain = codegen.typescript(a.session, "jev-2", 0.5);
+    expect(plain).toContain("department.confidence >= 0.6)");
+    expect(plain).not.toContain("frustration.confidence >= ");
+    a.session.bars.set("is_urgent", 0.625);
+    a.session.bars.set("department", 0.75);
+    a.session.bars.set("frustration", 1);
+    const ts = codegen.typescript(a.session, "jev-2", 0.5);
+    expect(ts).toContain("is_urgent.noul >= 0.625");
+    expect(ts).toContain("department && department.confidence >= 0.75)");
+    expect(ts).toContain("if (frustration && frustration.confidence >= 1) {");
+    expect(ts).toContain(
+      "console.log(`frustration: unsure (${frustration.confidence.toFixed(2)}), send to a human`);",
+    );
+    const rust = codegen.rust(a.session, "jev-2", 0.5);
+    expect(rust).toContain("is_yes(0.625)");
+    expect(rust).toContain("if department.confidence >= 0.75 {");
+    expect(rust).toContain("if frustration.confidence >= 1.0 {");
+    a.session.bars.set("is_urgent", 0.7);
+    expect(codegen.typescript(a.session, "jev-2", 0.5)).toContain("is_urgent.noul >= 0.70");
+    expect(codegen.rust(a.session, "jev-2", 0.5)).toContain("is_yes(0.70)");
+  });
+
   it("says what to do when there is nothing to generate", () => {
     const a = app();
     expect(codegen.typescript(a.session, "jev-latest", 0.5)).toContain(

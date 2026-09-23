@@ -429,3 +429,159 @@ describe("sketch mode in the app", () => {
     expect(() => draw(30, 6)).not.toThrow();
   });
 });
+
+describe("a question's bar", () => {
+  const BARRED = `A payout failed.
+---
+# thresholds were calibrated on 40 tickets
+is_urgent? The message conveys urgency
+  yes: A deadline
+  @threshold 0.62
+
+department: Which team should handle this
+  @confidence 0.7
+  billing = Payment or subscription issues
+  technical = Bugs or integration problems
+
+frustration: How frustrated the customer appears
+  Calm < Annoyed < Furious
+`;
+
+  it("reads @threshold under a noul and @confidence under a choice, wherever in the block", () => {
+    const parsed = sketch.parse(BARRED);
+    expect(parsed.problems).toEqual([]);
+    expect([...parsed.bars]).toEqual([
+      ["is_urgent", 0.62],
+      ["department", 0.7],
+    ]);
+    expect(parsed.tags[5]).toBe("bar");
+    expect(parsed.tags[8]).toBe("bar");
+    expect(sketch.tagLabel("bar")).toBe("bar");
+    expect(sketch.tagColor("bar")).toBe("lightBlue");
+    expect(parsed.blocks.get("is_urgent")).toEqual({ head: 3, last: 5, bar: 5 });
+    expect(parsed.blocks.get("department")).toEqual({ head: 7, last: 10, bar: 8 });
+    expect(parsed.blocks.get("frustration")).toEqual({ head: 12, last: 13, bar: undefined });
+  });
+
+  it("keeps the bar off the wire, and on the page", () => {
+    const session = sketch.parse(BARRED).toSession();
+    expect(session.requestJson("x")).not.toContain("0.62");
+    const page = sketch.render(session);
+    expect(page).toContain("  yes: A deadline\n  @threshold 0.62\n");
+    expect(page).toContain("  technical = Bugs or integration problems\n  @confidence 0.7\n");
+    const again = sketch.parse(page);
+    expect([...again.bars]).toEqual([...session.bars]);
+    expect(sketch.render(again.toSession())).toBe(page);
+  });
+
+  it("says what is wrong with a bar, on its line", () => {
+    const problem = (text: string): string | undefined => sketch.parse(text).problems[0]?.message;
+    expect(problem("s\n---\nq? x\n  @threshold 1.5\n")).toBe(
+      "`@threshold` takes a number from 0 to 1, e.g. `@threshold 0.6`",
+    );
+    expect(problem("s\n---\nq? x\n  @threshold 1e-1\n")).toContain("takes a number from 0 to 1");
+    expect(problem("s\n---\nq: x\n  a = 1\n  b = 2\n  @confidence\n")).toBe(
+      "`@confidence` takes a number from 0 to 1, e.g. `@confidence 0.6`",
+    );
+    expect(problem("s\n---\n@threshold 0.5\nq? x\n")).toBe(
+      "`@threshold` belongs under a question — put it below the `name?` line it sets",
+    );
+    expect(problem("s\n---\n@confidence 0.5\nq? x\n")).toBe(
+      "`@confidence` belongs under a question — put it below the choice or score it gates",
+    );
+    expect(problem("s\n---\nq? x\n  @confidence 0.5\n")).toBe(
+      "a yes/no question takes `@threshold`, not `@confidence`",
+    );
+    expect(problem("s\n---\nq: x\n  a < b\n  @threshold 0.5\n")).toBe(
+      "a choice or a score takes `@confidence`, not `@threshold`",
+    );
+    expect(problem('s\n---\nq! {"type": "noul"}\n@threshold 0.5\n')).toBe(
+      "a raw question takes no bar — jev cannot read its answer",
+    );
+    expect(problem("s\n---\nq? x\n  @threshold 0.5\n  @threshold 0.6\n")).toBe(
+      "`q` already has a bar on line 4",
+    );
+    expect(problem("s\n---\n@speed fast\n")).toBe(
+      "unknown directive `@speed`; there is `@model`, and `@threshold` or `@confidence` under a question",
+    );
+    const broken = sketch.parse("s\n---\nq:\n  @confidence 0.5\n");
+    expect(broken.tags[3]).toBe("bar");
+    expect(broken.problems.map((p) => p.line)).toEqual([2]);
+  });
+
+  it("writes bars back without touching anything else on the page", () => {
+    const written = sketch.setBars(
+      BARRED,
+      new Map([
+        ["is_urgent", 0.6],
+        ["frustration", 0.55],
+        ["nobody", 0.5],
+      ]),
+    );
+    expect(written).toBe(
+      BARRED.replace("@threshold 0.62", "@threshold 0.6").replace(
+        "  Calm < Annoyed < Furious\n",
+        "  Calm < Annoyed < Furious\n  @confidence 0.55\n",
+      ),
+    );
+    const inline = sketch.setBars(
+      "s\n---\nq? x | yes: y\nr: z\n    a = 1\n    b = 2",
+      new Map([
+        ["q", 0.3],
+        ["r", 0.8],
+      ]),
+    );
+    expect(inline).toBe(
+      "s\n---\nq? x | yes: y\n  @threshold 0.3\nr: z\n    a = 1\n    b = 2\n    @confidence 0.8",
+    );
+    const crlf = sketch.setBars("s\r\n---\r\nq? x\r\n", new Map([["q", 0.4]]));
+    expect(crlf).toBe("s\r\n---\r\nq? x\r\n  @threshold 0.4\r\n");
+  });
+
+  it("moves with its question, and goes when the question does", () => {
+    const session = sketch.parse(BARRED).toSession();
+    expect(session.thresholdOf("is_urgent", 0.5)).toBe(0.62);
+    expect(session.thresholdOf("department", 0.5)).toBe(0.5);
+    expect(session.thresholdOf("frustration", 0.5)).toBe(0.5);
+    const copy = session.clone();
+    copy.remove("is_urgent");
+    expect(copy.bar("is_urgent")).toBeUndefined();
+    expect(session.bar("is_urgent")).toBe(0.62);
+    const [, department] = session.questions[1] as [string, sketch.ParsedSketch["questions"][0][1]];
+    session.insert("department", department);
+    expect(session.bar("department")).toBe(0.7);
+    const [, urgent] = session.questions[0] as [string, sketch.ParsedSketch["questions"][0][1]];
+    session.insert("department", urgent);
+    expect(session.bar("department")).toBeUndefined();
+  });
+
+  it("survives :save and :open, and the answers are read at it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "jev-bar-"));
+    const path = join(dir, "triage.jev");
+    try {
+      writeFileSync(path, BARRED);
+      const a = app();
+      a.exec(`:open ${path}`);
+      expect(a.session.bar("is_urgent")).toBe(0.62);
+      a.exec(`:save ${path}`);
+      expect(readFileSync(path, "utf8")).toContain("@threshold 0.62");
+      a.exec(":ask");
+      expect(transcript(a)).toContain("at threshold 0.62");
+      expect(transcript(a)).not.toContain("at threshold 0.50");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts a changed bar as a change when a page is applied", () => {
+    const a = app();
+    a.exec(":preset triage");
+    a.handle({ kind: "key", event: ctrl("k") });
+    const editor = a.sketch as Editor;
+    const at = editor.lines.findIndex((l) => l.startsWith("is_urgent?"));
+    editor.lines.splice(at + 1, 0, "  @threshold 0.8");
+    a.handle({ kind: "key", event: ctrl("s") });
+    expect(a.session.bar("is_urgent")).toBe(0.8);
+    expect(transcript(a)).not.toContain("nothing changed.");
+  });
+});

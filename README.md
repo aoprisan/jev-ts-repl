@@ -55,6 +55,21 @@ shapes can be learned offline.
   <Enter>                                          # the same questions again; watch is_urgent move
   ```
 
+  `:trend` does the re-asking for you: every question after each turn — the first turn, the first
+  two, and so on — drawn as one line per question, so you can see when a rubric noticed rather than
+  only where it ended up. A choice is followed through the label it ended on, a score along its
+  levels, and the last column names every turn the answer changed:
+
+  ```text
+  trend · 4 turns
+    is_urgent    noul    ▂▂▅▇  0.12 → 0.91            turn 3 yes
+    department   choice  ▃▃▆▇  technical 0.35 → 0.80  turn 2 technical
+    frustration  score   ▂▂▄▇  0.20 → 1.70 of 2       turn 3 level 1 · turn 4 level 2
+    ≈ 612 in / 400 out tokens over 4 calls — estimated, since nothing was sent.
+  ```
+
+  It is a call per turn, live or not, and the cost line counts them all.
+
   Nothing new goes on the wire — the `state` is simply an array, `[{"who": …, "said": …}, …]`,
   which is why a page can hold one and `jev eval` can score one without knowing anything new. The
   speaker is the first word only when it ends in a colon, so a line typed without one keeps all of
@@ -187,6 +202,41 @@ levels. A bad line stops the run before anything is sent, named by its line in t
   4812 in / 3120 out tokens · $0.0041
 ```
 
+A conversation can be labelled turn by turn. `{"by_turn": 3}` on a noul says it should be false
+for the first two turns and true from the third on (`{"by_turn": null}`: never); the case is then
+sent once per turn, each prefix is scored as a case of its own, and the case's other labels apply
+to the whole conversation only. The noul's block gains a line that says when it noticed:
+
+```jsonl
+{
+  "id": "t-9",
+  "state": [
+    {
+      "who": "customer",
+      "said": "Hi"
+    },
+    {
+      "who": "customer",
+      "said": "It is down"
+    },
+    {
+      "who": "customer",
+      "said": "We lose money every minute"
+    }
+  ],
+  "expect": {
+    "is_urgent": {
+      "by_turn": 3
+    },
+    "department": "technical"
+  }
+}
+```
+
+```text
+    by turn  12 threads · 7 on time · 2 early · 2 late · 1 missed · 0 false alarms · mean latency +0.18 turns
+```
+
 That is the whole point of the table: the sweep says what a threshold buys, and the gate says what
 a confidence bar buys — 0.95 accuracy over 55% of the tickets, with the rest going to a person.
 
@@ -197,6 +247,83 @@ above it (rates required), and `--min-accuracy <0-1>` exits 1 when a question sc
 live run prints its estimate on stderr before sending anything. `--state` does not apply: the cases
 carry the states. Exit status is 0 when every case answered and every bar was met, 1 when a case
 errored or a bar was missed, 2 when the command line did not parse.
+
+### Keeping the threshold with the question
+
+Once the table has told you where the threshold goes, the page is where to keep it. A bar is
+written under its question, and it is the one thing on a page that never goes on the wire — it is
+what you do with the answer, not part of the question:
+
+```text
+is_urgent? The message conveys urgency
+  yes: A deadline, or money being lost now
+  @threshold 0.6
+
+department: Which team should handle this
+  billing = Payment or subscription issues
+  technical = Bugs or integration problems
+  @confidence 0.65
+```
+
+`@threshold` is where a noul starts reading as yes; `@confidence` is how sure a choice or a score
+has to be before it is acted on, with everything below it sent to a person. A question's own bar
+wins over `--threshold` and `:threshold`, which stay the default for nouls without one — in the
+answer page, in the eval report's starred row, and in `jev ts` and `jev rust`, which gate on the
+page's numbers instead of the 0.5 and 0.6 they otherwise write. `:save` and `:open` keep bars in a
+`.jev` page; a request body has nowhere to put one.
+
+`--calibrate` writes them for you:
+
+```sh
+jev eval triage.jev --cases cases.jsonl --calibrate
+```
+
+```text
+  calibration  target accuracy 0.90
+    is_urgent    @threshold 0.6     was none   f1 0.87
+    department   @confidence 0.65   was none   accuracy 0.92 over 0.55 of cases
+    frustration  left alone         no confidence bar reaches accuracy 0.90 (best 0.84 at 0.75)
+  wrote 2 bars to triage.jev
+```
+
+A noul gets the threshold with the best F1. A choice or a score gets the lowest confidence bar at
+which the answers it lets through are right `--target-accuracy` of the time (0.9 unless you say
+otherwise) — the lowest, because every step up hands more of the work to a person. Only the bar
+lines change: comments, blank lines and the order you wrote things in stay as they were. A run in
+which any case errored writes nothing, since the bars would be fitted to the cases that happened to
+work.
+
+### Comparing two pages
+
+A new page reads better than the old one on the three tickets you tried it on; that is not the same
+as being better. `--compare` runs a second page over the same cases and says what moved, case by
+case, and whether it moved more than chance would:
+
+```sh
+jev eval triage.jev --compare triage-v2.jev --cases cases.jsonl
+```
+
+```text
+  department   choice  40 paired cases
+                  a       b       Δ
+    accuracy      0.78    0.90    +0.12
+    9 fixed · 1 broke · 2 changed
+    McNemar p 0.021 over 10 discordant pairs: b is significantly better
+    case 2           sales → billing       fixed
+    case 17 (t-017)  billing → technical   broke
+```
+
+The first page is `a`, the one after `--compare` is `b`, and every delta is `b − a`, measured only
+on the cases both pages answered. A flip is `fixed` when `b` put right what `a` got wrong, `broke`
+the other way round, and `changed` when both were wrong in different ways. The significance line is
+an exact McNemar test over the fixed and broke cases; with fewer than six of them no difference can
+reach p < 0.05, and it says so rather than printing a number that would be read as one.
+
+A question only one page asks is listed as such, and a label may name a question on either page.
+Both runs share one estimate for `--max-cost`, one pool for `--concurrency` and one `--cache`, so a
+comparison costs what the two runs cost and a re-run costs nothing. `--fail-on-regression` exits 1
+when `b` is significantly worse on any question — the line to put in CI — and `--json` prints both
+reports whole next to the comparison.
 
 ## As a library
 
@@ -244,6 +371,36 @@ const client = new Client({
   retry: { maxRetries: 4, budgetMs: 60_000 },
 });
 ```
+
+### Recording and replaying
+
+A test that talks to the API costs money, needs a key and answers differently tomorrow. Record the
+answers once, then replay them: `TYPESAFE_RECORD=<dir>` writes every successful `systemOne`
+response to `<dir>/<key>.json`, and `TYPESAFE_REPLAY=<dir>` answers from those files and never
+touches the network — no key needed.
+
+```sh
+TYPESAFE_RECORD=test/cassettes npm test   # once, live, with a key
+TYPESAFE_REPLAY=test/cassettes npm test   # every time after: offline, free, the same answers
+```
+
+The same thing as options, which win over the environment:
+
+```ts
+const client = new Client({ replay: "test/cassettes" }); // or { record: "test/cassettes" }
+```
+
+The key is the SHA-256 of the compact request body — `{ state, model, questions }`, in that
+order, plus anything `extraBody` adds — so a different state, model or question is a different
+file. A request with no recording throws `ReplayMissError`, carrying the `key` and the `path` it
+looked for; a replay never falls back to the network or to simulated answers, because a test that
+quietly goes live is not the test you wrote. Setting both is a `ConfigError`, and so is
+`models().list()` on a replaying client. `cassetteKey(body)` is exported, for anything that wants
+to name a file the same way.
+
+A cassette directory is a `jev eval --cache` directory: same key, same file. Replay the cache of an
+eval run, or point `--cache` at what a test recorded. Record and replay read and write files, so
+they work in Node, not the browser.
 
 The REPL's own pieces are exported too (`App`, `Session`, `sketch`, `codegen`, `mock`, the terminal
 buffer), so a session can be driven, rendered or snapshot-tested without a terminal.

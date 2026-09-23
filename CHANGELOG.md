@@ -3,6 +3,51 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **Two pages, one set of cases, and whether the difference is real.** `jev eval a.jev --compare
+b.jev --cases cases.jsonl` runs both pages over the same labelled states and reports, per
+  question they share, the change in Brier, accuracy and F1 (or exact, within one and MAE for a
+  score), the cases whose answer flipped — `fixed`, `broke` or `changed` — and an exact McNemar
+  test over the cases one page got right and the other wrong, which says "too few" instead of a
+  p-value when there are fewer than six. Both runs share one cost estimate, one pool of workers and
+  one cache; `--fail-on-regression` exits 1 when the second page is significantly worse, and
+  `--json` prints both reports next to the comparison. `jev_eval` over MCP takes `compare` too.
+  New `parseCompareCases`, `runCompare`, `compare`, `compareLines`, `compareJson`, `regressions`
+  and `mcnemar` on `evaluate`.
+
+- **The threshold lives on the page.** `@threshold 0.6` under a noul and `@confidence 0.65` under a
+  choice or a score write down the bar its answer is acted on at. The bar never goes on the wire;
+  it wins over `--threshold` and `:threshold` wherever an answer is read — the answer page, the
+  eval report's starred row, a comparison — and `jev ts` / `jev rust` gate on it instead of the
+  hard-coded 0.5 and 0.6. It round-trips through `:sketch`, `:save` and `:open`, the gutter labels
+  it `bar`, a misplaced one is a problem on its line, and the web Build tab has a field for it.
+- **`jev eval --calibrate` writes the bars back.** Each noul's best-F1 threshold and the lowest
+  confidence bar at which a choice or a score reaches `--target-accuracy` (default 0.9) go into the
+  page in place, touching nothing but the bar lines, and the report says what changed and why a
+  question was left alone. `jev_eval` over MCP takes `calibrate` and hands back the page. New
+  `Session.bars`, `bar` and `thresholdOf`; `sketch.setBars` and `parseBar`; `evaluate.calibrate`,
+  `calibrationLines` and `calibrationJson`.
+- **`:trend` follows a rubric across a conversation.** Every question is asked again after each
+  turn of the thread in the state, and drawn as one line apiece — a spark across the turns, where
+  it started and ended, and the turns it changed its mind — with the cost line counting every
+  call. New `trend` module on both exports.
+- **A conversation can be labelled per turn.** In a cases file, `{"by_turn": 3}` on a noul means
+  false before turn 3 and true from it on, and `{"by_turn": null}` means never; such a case is sent
+  once per prefix of the conversation and each prefix is scored as a case. The noul's block then
+  says when it noticed: how many threads it caught on time, early, late or never, how many false
+  alarms, and the mean latency in turns. A case without `by_turn` reads exactly as before.
+- **Record and replay.** `TYPESAFE_RECORD=<dir>` (or `new Client({ record: dir })`) writes each
+  successful `systemOne` response body to `<dir>/<key>.json`; `TYPESAFE_REPLAY=<dir>` (or
+  `{ replay: dir }`) answers from there with no network and no API key. A request with no
+  recording throws the new `ReplayMissError`, with the `key` and `path` it looked for, and never
+  falls back to a live call. Setting both is a `ConfigError`.
+- New `cassetteKey` on both exports: the SHA-256 of a compact request body, in hex. `jev eval
+--cache` now uses it too, unchanged, so a cassette directory and an eval cache are
+  interchangeable. A test pins the digest of a fixture, for the other SDKs to match.
+
 ## 0.6.0
 
 ### Added

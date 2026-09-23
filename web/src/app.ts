@@ -255,6 +255,7 @@ function describeCursor(): void {
     model: "the model this request asks for",
     comment: "a comment — never sent",
     json: "part of the raw question's JSON",
+    bar: "a bar — @threshold is where a noul reads as yes; @confidence is how sure a choice or score must be to act on",
     stray: "not placed yet",
     blank: "",
   };
@@ -308,6 +309,8 @@ function card(session: SessionType, name: string, question: Question, index: num
         ([n, q]) => [n === name ? clean : n, q] as [string, Question],
       ),
       model: session.model,
+      // The bar belongs to the question, so it follows it to its new name.
+      bars: new Map([...session.bars].map(([n, bar]) => [n === name ? clean : n, bar])),
     });
     commit(rebuilt);
   };
@@ -452,6 +455,34 @@ function card(session: SessionType, name: string, question: Question, index: num
     body.push(h("pre", { class: "raw" }, [compact(question.value)]));
   }
 
+  if (kind !== "raw") {
+    // The page's `@threshold` or `@confidence`: blank is none, anything else has to read as one.
+    const directive = kind === "noul" ? "threshold" : "confidence";
+    const bar = session.bar(name);
+    body.push(
+      field(
+        kind === "noul" ? "threshold" : "confidence bar",
+        bar === undefined ? "" : String(bar),
+        (value) => {
+          const clean = value.trim();
+          if (clean === "") {
+            session.bars.delete(name);
+            commit(session);
+            return;
+          }
+          const parsedBar = sketch.parseBar(clean);
+          if (parsedBar === undefined) {
+            say(`\`@${directive}\` takes a number from 0 to 1, e.g. \`@${directive} 0.6\``);
+            drawCards();
+            return;
+          }
+          session.bars.set(name, parsedBar);
+          commit(session);
+        },
+      ),
+    );
+  }
+
   return h("section", { class: `card k-${kind}` }, [
     h("header", {}, [
       h("span", { class: `pill c-${format.colorFor(kind)}` }, [kind]),
@@ -582,7 +613,9 @@ function drawPreview(): void {
     }
     preview.append(
       h("div", { class: "answer" }, [
-        styledLines(format.answerLines(name, answer, state.settings.threshold)),
+        styledLines(
+          format.answerLines(name, answer, session.thresholdOf(name, state.settings.threshold)),
+        ),
       ]),
     );
   }

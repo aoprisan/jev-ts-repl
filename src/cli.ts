@@ -10,7 +10,6 @@
  * saved with `:save` and then run from a script, a Makefile or CI.
  */
 
-import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +18,8 @@ import { fileURLToPath } from "node:url";
 import * as install from "./agent/installer.js";
 import type { Host, Sent } from "./agent/mcp.js";
 import { serve } from "./agent/serve.js";
-import { compact, pretty } from "./json.js";
+import type { JsonObject } from "./json.js";
+import { pretty } from "./json.js";
 import { App } from "./repl/app.js";
 import type { Msg } from "./repl/app.js";
 import * as cost from "./repl/cost.js";
@@ -29,9 +29,11 @@ import * as headless from "./repl/headless.js";
 import { errorLines } from "./repl/format.js";
 import type { Session } from "./repl/session.js";
 import { parseTurn } from "./repl/session.js";
+import * as sketch from "./repl/sketch.js";
 import { render } from "./repl/ui.js";
 import { Terminal } from "./tui/terminal.js";
-import { linesText } from "./tui/style.js";
+import { blankLine, linesText } from "./tui/style.js";
+import { cassetteKey } from "./typesafe/cassette.js";
 import { Client } from "./typesafe/client.js";
 import { API_KEY_ENV, VERSION } from "./typesafe/constants.js";
 import { decodeSystemOne, makeSystemOneResponse } from "./typesafe/responses.js";
@@ -70,6 +72,10 @@ Options for eval
   --cache <dir>          keep the responses here, so running it again sends nothing
   --max-cost <dollars>   refuse to send when the estimate is above this
   --min-accuracy <0-1>   exit 1 when a scored question falls below this
+  --compare <page>       run a second page over the same cases and report the difference
+  --fail-on-regression   with --compare, exit 1 when the second page is significantly worse
+  --calibrate            write the thresholds and confidence bars the run supports into the page
+  --target-accuracy <0-1>  the accuracy a confidence bar has to reach (default 0.9)
 
 Exit status is 0 when it worked, 1 when the call or the file did not, 2 when the
 command line did not parse.
@@ -93,6 +99,12 @@ interface Options {
   cache?: string;
   maxCost?: number;
   minAccuracy?: number;
+  /** `jev eval --compare`: the second page, and whether a regression fails the run. */
+  compare?: string;
+  failOnRegression: boolean;
+  /** `jev eval --calibrate`: write the bars back into the page, aiming at this accuracy. */
+  calibrate: boolean;
+  targetAccuracy?: number;
 }
 
 /** A usage error: the command line itself did not make sense. */
@@ -110,6 +122,8 @@ const FLAGS_WITH_VALUES = [
   "--cache",
   "--max-cost",
   "--min-accuracy",
+  "--compare",
+  "--target-accuracy",
 ];
 
 /**
@@ -124,6 +138,8 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
     mock: false,
     json: false,
     concurrency: 4,
+    failOnRegression: false,
+    calibrate: false,
     rates: cost.ratesFromEnv(env[cost.PRICE_ENV]),
   };
   let file: string | undefined;
@@ -200,6 +216,23 @@ function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv): Options 
         options.minAccuracy = bar;
         break;
       }
+      case "--compare":
+        options.compare = valueOf();
+        break;
+      case "--fail-on-regression":
+        options.failOnRegression = true;
+        break;
+      case "--calibrate":
+        options.calibrate = true;
+        break;
+      case "--target-accuracy": {
+        const target = Number(valueOf());
+        if (!Number.isFinite(target) || target < 0 || target > 1) {
+          throw new UsageError("--target-accuracy takes a number from 0 to 1.");
+        }
+        options.targetAccuracy = target;
+        break;
+      }
       case "--mock":
         options.mock = true;
         break;
@@ -245,6 +278,23 @@ function checkEvalOptions(options: Options): void {
   if (options.maxCost !== undefined && options.rates === undefined) {
     throw new UsageError("--max-cost needs rates: pass --price <in>/<out> or set JEV_PRICE.");
   }
+  if (options.compare === "-" && (options.file === "-" || options.cases === "-")) {
+    throw new UsageError("only one of the page, --compare and --cases can come from stdin.");
+  }
+  if (options.failOnRegression && options.compare === undefined) {
+    throw new UsageError("--fail-on-regression needs --compare: there is nothing to regress from.");
+  }
+  if (options.calibrate && options.compare !== undefined) {
+    throw new UsageError("--calibrate and --compare do not mix: calibrate one page at a time.");
+  }
+  if (options.calibrate && options.file === "-") {
+    throw new UsageError(
+      "--calibrate writes the page back, so the page has to be a file, not stdin.",
+    );
+  }
+  if (options.targetAccuracy !== undefined && !options.calibrate) {
+    throw new UsageError("--target-accuracy only applies with --calibrate.");
+  }
 }
 
 /** The page: a file, or everything on stdin when the path is `-`. */
@@ -264,10 +314,12 @@ function mockAsk(session: Session): Promise<evaluate.Outcome> {
   return Promise.resolve({ ok: true, answers: headless.mockAnswers(session) });
 }
 
-/** The cache key: the request body this case would POST, hashed. */
-function cacheKey(session: Session, model: string): string {
-  const body = compact({ state: session.state, model, questions: session.questionsJson() });
-  return createHash("sha256").update(body).digest("hex");
+/**
+ * The cache key: the request body this case would POST, hashed — the library's cassette key, so
+ * a `TYPESAFE_RECORD` directory is a cache and a cache can be replayed.
+ */
+function cacheKey(session: Session, model: string): Promise<string> {
+  return cassetteKey({ state: session.state, model, questions: session.questionsJson() });
 }
 
 /** A cached response, or `undefined` when there is none this run can use. */
@@ -308,7 +360,8 @@ function liveAsk(
     options.timeoutMs === undefined ? { model } : { model, timeoutMs: options.timeoutMs };
   const dir = options.cache;
   return async (session) => {
-    const file = dir === undefined ? undefined : join(dir, `${cacheKey(session, model)}.json`);
+    const file =
+      dir === undefined ? undefined : join(dir, `${await cacheKey(session, model)}.json`);
     if (file !== undefined) {
       const hit = cached(file, session);
       if (hit !== undefined) return hit;
@@ -331,6 +384,7 @@ function liveAsk(
  */
 async function runEval(
   session: Session,
+  page: string,
   options: Options,
   model: string,
   client: Client | undefined,
@@ -344,6 +398,9 @@ async function runEval(
     err(`jev eval: ${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
   }
+  if (options.compare !== undefined) {
+    return runEvalCompare(session, text, options, model, client, out, err);
+  }
   const parsed = evaluate.parseCases(text, session);
   if (!parsed.ok) {
     err(`jev eval: ${parsed.error}\n`);
@@ -353,30 +410,9 @@ async function runEval(
 
   if (client !== undefined) {
     const estimate = evaluate.preflight(session, cases, model, options.rates);
-    const rates = options.rates;
-    const money =
-      estimate.cost === undefined || rates === undefined
-        ? ""
-        : `, ≈ ${cost.usd(estimate.cost.total)} at ${cost.formatRates(rates)}`;
-    err(
-      `jev eval: ${estimate.cases} case${estimate.cases === 1 ? "" : "s"}, ≈ ${estimate.inputTokens} in / ${estimate.outputTokens} out tokens${money}\n`,
-    );
-    if (options.maxCost !== undefined && estimate.cost !== undefined) {
-      if (estimate.cost.total > options.maxCost) {
-        err(
-          `jev eval: refusing to send: ≈ ${cost.usd(estimate.cost.total)} is above --max-cost ${cost.usd(options.maxCost)}.\n`,
-        );
-        return 1;
-      }
-    }
-    if (options.cache !== undefined) {
-      try {
-        mkdirSync(options.cache, { recursive: true });
-      } catch (e) {
-        err(`jev eval: could not use ${options.cache}: ${e instanceof Error ? e.message : e}\n`);
-        return 1;
-      }
-    }
+    const n = estimate.cases;
+    const stop = beforeSending(`${n} case${n === 1 ? "" : "s"}`, [estimate], options, err);
+    if (stop !== undefined) return stop;
   }
 
   const ask = client === undefined ? mockAsk : liveAsk(client, model, options);
@@ -386,19 +422,191 @@ async function runEval(
     threshold: options.threshold,
     rates: options.rates,
   });
-  if (options.json) out(`${pretty(evaluate.reportJson(report))}\n`);
-  else out(`${linesText(evaluate.reportLines(report))}\n`);
+  let code = report.errors.length > 0 ? 1 : 0;
+
+  // Calibration writes before it prints, so the report never claims a file it failed to write.
+  const calibration =
+    options.calibrate && report.errors.length === 0
+      ? evaluate.calibrate(
+          session,
+          cases,
+          outcomes,
+          report,
+          options.targetAccuracy ?? evaluate.DEFAULT_TARGET,
+        )
+      : undefined;
+  let written = true;
+  if (calibration !== undefined && calibration.changed.size > 0) {
+    try {
+      writeFileSync(options.file, sketch.setBars(page, calibration.changed));
+    } catch (e) {
+      err(`jev eval: could not write ${options.file}: ${e instanceof Error ? e.message : e}\n`);
+      written = false;
+      code = 1;
+    }
+  }
+  const shown = written ? calibration : undefined;
+
+  if (options.json) {
+    const json = evaluate.reportJson(report) as JsonObject;
+    if (shown !== undefined) json["calibration"] = evaluate.calibrationJson(shown, options.file);
+    out(`${pretty(json)}\n`);
+  } else {
+    const lines = evaluate.reportLines(report);
+    if (shown !== undefined)
+      lines.push(blankLine(), ...evaluate.calibrationLines(shown, options.file));
+    out(`${linesText(lines)}\n`);
+  }
+  if (client === undefined) {
+    err(
+      "Simulated answers: deterministic noise, not judgement. Set TYPESAFE_API_KEY for real ones.\n",
+    );
+  }
+  if (options.calibrate && report.errors.length > 0) {
+    err(`jev eval: ${evaluate.notCalibrating(report.errors.length)}\n`);
+  }
+
+  const bar = options.minAccuracy;
+  if (bar !== undefined) {
+    for (const [name, accuracy] of evaluate.belowBar(report, bar)) {
+      err(`jev eval: ${name} accuracy ${accuracy.toFixed(2)} is below ${bar.toFixed(2)}.\n`);
+      code = 1;
+    }
+  }
+  return code;
+}
+
+/** What a page is called in a comparison: the path it came from, or stdin. */
+function labelOf(path: string): string {
+  return path === "-" ? "stdin" : path;
+}
+
+type Preflight = ReturnType<typeof evaluate.preflight>;
+
+/**
+ * The live preflight: say what the run is about to cost, refuse it above `--max-cost`, and make
+ * the cache directory. Returns the exit status to stop with, or `undefined` to go on and send.
+ */
+function beforeSending(
+  what: string,
+  estimates: readonly Preflight[],
+  options: Options,
+  err: (text: string) => void,
+): number | undefined {
+  const inputTokens = estimates.reduce((sum, one) => sum + one.inputTokens, 0);
+  const outputTokens = estimates.reduce((sum, one) => sum + one.outputTokens, 0);
+  const rates = options.rates;
+  const total =
+    rates === undefined ? undefined : cost.price(inputTokens, outputTokens, rates).total;
+  const money =
+    total === undefined || rates === undefined
+      ? ""
+      : `, ≈ ${cost.usd(total)} at ${cost.formatRates(rates)}`;
+  err(`jev eval: ${what}, ≈ ${inputTokens} in / ${outputTokens} out tokens${money}\n`);
+  if (options.maxCost !== undefined && total !== undefined && total > options.maxCost) {
+    err(
+      `jev eval: refusing to send: ≈ ${cost.usd(total)} is above --max-cost ${cost.usd(options.maxCost)}.\n`,
+    );
+    return 1;
+  }
+  if (options.cache !== undefined) {
+    try {
+      mkdirSync(options.cache, { recursive: true });
+    } catch (e) {
+      err(`jev eval: could not use ${options.cache}: ${e instanceof Error ? e.message : e}\n`);
+      return 1;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * `jev eval --compare`: two pages over the same cases, and whether the difference is real.
+ *
+ * Everything that costs money is shared — one preflight over both pages, one pool of workers, one
+ * cache — so comparing two pages costs what running them both costs and nothing more.
+ */
+async function runEvalCompare(
+  a: Session,
+  text: string,
+  options: Options,
+  modelA: string,
+  client: Client | undefined,
+  out: (text: string) => void,
+  err: (text: string) => void,
+): Promise<number> {
+  const labels = { a: labelOf(options.file), b: labelOf(options.compare as string) };
+  let second: string;
+  try {
+    second = readInput(options.compare as string);
+  } catch (e) {
+    err(`jev eval: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 1;
+  }
+  const loaded = headless.load(second);
+  if (!loaded.ok) {
+    err(`jev eval: ${labels.b}: ${loaded.error}\n`);
+    return 1;
+  }
+  const b = loaded.value;
+  if (options.model !== undefined) b.model = options.model;
+  const modelB = b.model ?? client?.defaultModel ?? "jev-latest";
+
+  const parsed = evaluate.parseCompareCases(text, a, b, labels);
+  if (!parsed.ok) {
+    err(`jev eval: ${parsed.error}\n`);
+    return 1;
+  }
+  const [casesA, casesB] = parsed.value;
+
+  if (client !== undefined) {
+    const estimates = [
+      evaluate.preflight(a, casesA, modelA, undefined),
+      evaluate.preflight(b, casesB, modelB, undefined),
+    ];
+    const what = `${casesA.length} + ${casesB.length} cases over two pages`;
+    const stop = beforeSending(what, estimates, options, err);
+    if (stop !== undefined) return stop;
+  }
+
+  const askA = client === undefined ? mockAsk : liveAsk(client, modelA, options);
+  const askB = client === undefined ? mockAsk : liveAsk(client, modelB, options);
+  const [outcomesA, outcomesB] = await evaluate.runCompare(
+    { session: a, cases: casesA, ask: askA },
+    { session: b, cases: casesB, ask: askB },
+    options.concurrency,
+  );
+  const comparison = evaluate.compare(
+    { label: labels.a, session: a, cases: casesA, outcomes: outcomesA, model: modelA },
+    { label: labels.b, session: b, cases: casesB, outcomes: outcomesB, model: modelB },
+    { threshold: options.threshold, rates: options.rates },
+  );
+  if (options.json) out(`${pretty(evaluate.compareJson(comparison))}\n`);
+  else out(`${linesText(evaluate.compareLines(comparison))}\n`);
   if (client === undefined) {
     err(
       "Simulated answers: deterministic noise, not judgement. Set TYPESAFE_API_KEY for real ones.\n",
     );
   }
 
-  let code = report.errors.length > 0 ? 1 : 0;
+  const sides = [comparison.a, comparison.b];
+  let code = sides.some((side) => side.report.errors.length > 0) ? 1 : 0;
   const bar = options.minAccuracy;
   if (bar !== undefined) {
-    for (const [name, accuracy] of evaluate.belowBar(report, bar)) {
-      err(`jev eval: ${name} accuracy ${accuracy.toFixed(2)} is below ${bar.toFixed(2)}.\n`);
+    for (const side of sides) {
+      for (const [name, accuracy] of evaluate.belowBar(side.report, bar)) {
+        err(
+          `jev eval: ${side.label}: ${name} accuracy ${accuracy.toFixed(2)} is below ${bar.toFixed(2)}.\n`,
+        );
+        code = 1;
+      }
+    }
+  }
+  if (options.failOnRegression) {
+    for (const question of evaluate.regressions(comparison)) {
+      err(
+        `jev eval: ${question.name} is significantly worse in ${labels.b} (McNemar p ${question.mcnemar.p.toFixed(3)}).\n`,
+      );
       code = 1;
     }
   }
@@ -475,7 +683,13 @@ async function runCommand(
   }
   const model = session.model ?? client?.defaultModel ?? "jev-latest";
 
-  if (command === "eval") return runEval(session, options, model, client, out, err);
+  if (command === "eval") {
+    if (options.calibrate && text.trimStart().startsWith("{")) {
+      err("jev eval: --calibrate needs a .jev page: a request body has nowhere to keep a bar.\n");
+      return 1;
+    }
+    return runEval(session, text, options, model, client, out, err);
+  }
 
   switch (command) {
     case "json":
@@ -502,7 +716,7 @@ async function runCommand(
     const answers = headless.mockAnswers(session);
     if (options.json) out(headless.answersJson(answers, model));
     else {
-      out(headless.answersText(answers, options.threshold));
+      out(headless.answersText(answers, options.threshold, session));
       out(headless.usageText(session, model, options.rates, undefined));
       err(
         "Simulated answers: deterministic noise, not judgement. Set TYPESAFE_API_KEY for real ones.\n",
@@ -518,7 +732,7 @@ async function runCommand(
     const answers = headless.liveAnswers(session, response);
     if (options.json) out(headless.answersJson(answers, model, response.raw));
     else {
-      out(headless.answersText(answers, options.threshold));
+      out(headless.answersText(answers, options.threshold, session));
       out(headless.usageText(session, model, options.rates, response.usage));
     }
     return 0;
