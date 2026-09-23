@@ -225,7 +225,7 @@ describe.runIf(built)("the one-shot commands", () => {
   });
 
   it("generates the session as code", () => {
-    expect(jev(["ts"], { input: PAGE }).stdout).toContain("client.systemOne");
+    expect(jev(["ts"], { input: PAGE }).stdout).toContain("client.ask(");
     expect(jev(["rust"], { input: PAGE }).stdout).toContain("typesafe");
   });
 

@@ -15,6 +15,11 @@ pre-1.0, so a minor bump may still move the surface under you.
   is a `ResponseValidationError` naming the field. `rubric.decode(response)` types a response you
   already have. The counterpart of `response_model` in `typesafe-sdk` 0.7. `choice()` now keeps
   its labels as literal types; code that passed labels built at run time still gets `string`.
+- **`jev ts` writes the typed version.** The program it prints puts the page's questions in a
+  `rubric` and reads `answers.<name>` from `client.ask`, so the code it hands you type-checks
+  against the page: no `undefined` checks, and a choice's label is one of its own. A test compiles
+  the generated program against the package on every run. The skill's SDK example teaches the
+  same.
 
 ### Changed
 

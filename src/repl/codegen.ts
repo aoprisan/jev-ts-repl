@@ -54,22 +54,28 @@ function property(name: string): string {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
 }
 
-/** This session as a TypeScript program against the client this package ships. */
+/**
+ * This session as a TypeScript program against the client this package ships. The questions go
+ * into a `rubric`, so every answer the program reads is typed by its question and a choice's label
+ * is one of its own.
+ */
 export function typescript(session: Session, model: string, threshold: number): string {
   const questions = shape(session);
-  const used = new Set<string>(["Client"]);
+  const used = new Set<string>(["Client", "rubric"]);
 
   const lines: string[] = [];
   lines.push(`const client = Client.fromEnv(); // ${"TYPESAFE_API_KEY"}`);
   lines.push("");
-  lines.push("const res = await client.systemOne(");
-  lines.push(`  ${literal(session.state)},`);
-  lines.push("  {");
+  lines.push("const questions = rubric({");
   for (const q of questions) {
     used.add(q.kind === "raw" ? "raw" : q.kind);
-    lines.push(`    ${property(q.name)}: ${builder(q, 4)},`);
+    lines.push(`  ${property(q.name)}: ${builder(q, 2)},`);
   }
-  lines.push("  },");
+  lines.push("});");
+  lines.push("");
+  lines.push("const { answers } = await client.ask(");
+  lines.push("  questions,");
+  lines.push(`  ${literal(session.state)},`);
   lines.push(`  { model: ${JSON.stringify(model)} },`);
   lines.push(");");
   lines.push("");
@@ -122,52 +128,46 @@ function reader(q: Shaped, threshold: number): string[] {
   const name = q.name;
   const cut = thresholdLiteral(q.bar ?? threshold);
   const variable = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : `answer_${hashName(name)}`;
-  const lookup = JSON.stringify(name);
+  const access = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
+    ? `answers.${name}`
+    : `answers[${JSON.stringify(name)}]`;
+  const unsure = `  console.log(\`${name}: unsure (\${${variable}.confidence.toFixed(2)}), send to a human\`);`;
+  const scoreLine = [
+    "console.log(",
+    `  \`${name}: \${${variable}.score.toFixed(2)} of \${${variable}.legend.size - 1} \` +`,
+    `    \`(confidence \${${variable}.confidence.toFixed(2)})\`,`,
+    ");",
+  ];
   switch (q.kind) {
     case "noul":
       return [
-        `const ${variable} = res.noul(${lookup});`,
-        `if (${variable}) {`,
-        "  console.log(",
-        `    \`${name}: \${${variable}.noul.toFixed(2)} -> \${${variable}.noul >= ${cut}}\`,`,
-        "  );",
-        "}",
+        `const ${variable} = ${access};`,
+        `console.log(\`${name}: \${${variable}.noul.toFixed(2)} -> \${${variable}.noul >= ${cut}}\`);`,
       ];
     case "choice":
       return [
-        `const ${variable} = res.choice(${lookup});`,
-        `if (${variable} && ${variable}.confidence >= ${String(q.bar ?? CHOICE_GATE)}) {`,
+        `const ${variable} = ${access};`,
+        `if (${variable}.confidence >= ${String(q.bar ?? CHOICE_GATE)}) {`,
         `  console.log(\`${name}: \${${variable}.choice}\`);`,
-        `} else if (${variable}) {`,
-        `  console.log(\`${name}: unsure (\${${variable}.confidence.toFixed(2)}), send to a human\`);`,
+        "} else {",
+        unsure,
         "}",
       ];
     case "score":
       if (q.bar !== undefined) {
         // A score with a bar is gated like a choice: act above it, hand the rest to a person.
         return [
-          `const ${variable} = res.score(${lookup});`,
-          `if (${variable} && ${variable}.confidence >= ${String(q.bar)}) {`,
-          "  console.log(",
-          `    \`${name}: \${${variable}.score.toFixed(2)} of \${${variable}.legend.size - 1} \` +`,
-          `      \`(confidence \${${variable}.confidence.toFixed(2)})\`,`,
-          "  );",
-          `} else if (${variable}) {`,
-          `  console.log(\`${name}: unsure (\${${variable}.confidence.toFixed(2)}), send to a human\`);`,
+          `const ${variable} = ${access};`,
+          `if (${variable}.confidence >= ${String(q.bar)}) {`,
+          ...scoreLine.map((l) => `  ${l}`),
+          "} else {",
+          unsure,
           "}",
         ];
       }
-      return [
-        `const ${variable} = res.score(${lookup});`,
-        `if (${variable}) {`,
-        "  console.log(",
-        `    \`${name}: \${${variable}.score.toFixed(2)} of \${${variable}.legend.size - 1} \` +`,
-        `      \`(confidence \${${variable}.confidence.toFixed(2)})\`,`,
-        "  );",
-        "}",
-      ];
+      return [`const ${variable} = ${access};`, ...scoreLine];
     default:
-      return [`// ${name}: a raw question — read it from res.raw`];
+      return [`// ${name}: a raw question — its answer is ${access}, typed as any Answer`];
   }
 }
 
