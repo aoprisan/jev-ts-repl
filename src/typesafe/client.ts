@@ -118,6 +118,42 @@ function runtime(): string {
   return "browser";
 }
 
+/**
+ * `error` with the URL's credentials and the key masked in its message and cause chain: fetch
+ * refuses a URL with a password in it by quoting the whole URL back.
+ */
+function withoutSecrets(error: unknown, url: string, authorization: string | undefined): unknown {
+  const secrets = new Set<string>();
+  const key = authorization?.replace(/^Bearer /, "");
+  if (key) secrets.add(key);
+  try {
+    const u = new URL(url);
+    for (const part of [u.password, u.search.slice(1)]) {
+      if (part) {
+        secrets.add(part);
+        secrets.add(decodeURIComponent(part));
+      }
+    }
+  } catch {
+    // Not a URL: nothing in it to mask.
+  }
+  if (secrets.size === 0) return error;
+  const mask = (text: string): string => {
+    for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+      text = text.split(secret).join("***");
+    }
+    return text;
+  };
+  const copy = (e: unknown, depth: number): unknown => {
+    if (!(e instanceof Error)) return typeof e === "string" ? mask(e) : e;
+    const masked = new Error(mask(e.message));
+    masked.name = e.name;
+    if (e.cause !== undefined && depth < 8) masked.cause = copy(e.cause, depth + 1);
+    return masked;
+  };
+  return copy(error, 0);
+}
+
 function checkBaseUrl(url: string): void {
   let parsed: URL;
   try {
@@ -206,14 +242,16 @@ export class Client {
       }
     }
 
-    const apiKey = options.apiKey ?? env(API_KEY_ENV);
-    if (replay === undefined && (apiKey === undefined || apiKey.trim() === "")) {
+    const apiKey = (options.apiKey ?? env(API_KEY_ENV))?.trim() || undefined;
+    if (replay === undefined && apiKey === undefined) {
       throw new ConfigError(
         `No API key was provided. Pass apiKey or set the ${API_KEY_ENV} environment variable.`,
       );
     }
-    if (apiKey !== undefined && /[^\t\x20-\x7e\x80-\xff]/.test(apiKey)) {
-      throw new ConfigError("The API key contains characters not allowed in a header.");
+    if (apiKey !== undefined && !/^[\x21-\x7e]+$/.test(apiKey)) {
+      throw new ConfigError(
+        "API key must contain only printable ASCII characters without whitespace.",
+      );
     }
     const baseUrl = (options.baseUrl ?? env(BASE_URL_ENV) ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     checkBaseUrl(baseUrl);
@@ -440,7 +478,7 @@ export class Client {
       if (e instanceof TypeSafeError) throw e;
       if (timedOut) throw new TimeoutError(timeoutMs);
       if (signal?.aborted) throw e;
-      throw new ConnectionError(e);
+      throw new ConnectionError(withoutSecrets(e, url, headers["authorization"]));
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);

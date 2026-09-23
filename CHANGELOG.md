@@ -3,6 +3,22 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Changed
+
+- **The API key is checked the way `typesafe-sdk` 0.7 checks it.** Surrounding whitespace is
+  trimmed from an explicit key as well as from `TYPESAFE_API_KEY`, and a key with whitespace,
+  control or non-ASCII characters inside it is a `ConfigError` before anything is sent.
+- **A bad model entry is named by its index:** `models[1].name`, as the Python SDK names it, where
+  it used to be `models.1.name`.
+
+### Fixed
+
+- **A `ConnectionError` no longer quotes the password of a base URL back.** fetch refuses a URL
+  with credentials in it by printing the whole URL; the password, the query and the key are now
+  masked in the error's message and in its cause.
+
 ## 0.7.0
 
 ### Added

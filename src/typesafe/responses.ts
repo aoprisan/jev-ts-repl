@@ -296,7 +296,7 @@ export function decodeModels(text: string): { models: ModelMetadata[]; raw: Json
   const list = obj["models"];
   if (!Array.isArray(list)) fail("models", "expected an array");
   const models = list.map((entry, i) => {
-    const prefix = `models.${i}`;
+    const prefix = `models[${i}]`;
     const m = requireObject(entry, prefix);
     return {
       name: requireString(m["name"], at(prefix, "name")),
