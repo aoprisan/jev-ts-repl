@@ -13,8 +13,15 @@ pre-1.0, so a minor bump may still move the surface under you.
 - **A bad model entry is named by its index:** `models[1].name`, as the Python SDK names it, where
   it used to be `models.1.name`.
 
+- **`jev check` holds a page to the API's limits.** A score with more than 10 levels or a choice
+  with more than 255 options is now a problem on its line, as the primitives docs set them,
+  instead of a request the API refuses.
+
 ### Fixed
 
+- **The skill no longer promises a rationale.** It told agents every answer carries a confidence
+  and a short rationale; a noul's probability is its own confidence, and no answer has a
+  rationale.
 - **A `ConnectionError` no longer quotes the password of a base URL back.** fetch refuses a URL
   with credentials in it by printing the whole URL; the password, the query and the key are now
   masked in the error's message and in its cause.
