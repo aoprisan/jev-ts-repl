@@ -372,6 +372,38 @@ const client = new Client({
 });
 ```
 
+### Typed answers
+
+`res.choice("department")` is a `ChoiceAnswer | undefined` whose `choice` is any string. When the
+questions are fixed, name them once with `rubric` and `ask` reads the answers back typed by it:
+
+```ts
+import { Client, choice, noul, rubric, score } from "jev-repl";
+
+const triage = rubric({
+  is_urgent: noul("The message conveys urgency"),
+  department: choice("Which team should handle this", {
+    billing: "Payment or subscription issues",
+    technical: "Bugs or integration problems",
+  }),
+  frustration: score("How frustrated", ["Calm", "Frustrated", "Very angry"]),
+});
+
+const { answers, response } = await Client.fromEnv().ask(triage, "The payout failed again.");
+answers.is_urgent.noul; // number
+answers.department.choice; // "billing" | "technical"
+answers.department.probabilities.billing; // number
+answers.frustration.score; // number
+response.requestId; // the SystemOneResponse it came from
+```
+
+A misspelled name, a label the choice does not have, or reading a noul as a score is a compile
+error. The answers are checked on arrival as well: a missing answer, one of the wrong type, or a
+label outside the choice is a `ResponseValidationError` whose `fieldPath` names it
+(`answers.frustration`, `answers.department.choice`). `triage.decode(response)` does the same for a
+response you already have, and recording and replaying work as they do for `systemOne`. It is
+this package's `response_model` from the Python SDK, and `#[derive(Rubric)]` from the Rust one.
+
 ### Recording and replaying
 
 A test that talks to the API costs money, needs a key and answers differently tomorrow. Record the

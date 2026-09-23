@@ -40,6 +40,7 @@ import {
   makeSystemOneResponse,
 } from "./responses.js";
 import type { RetryPolicy } from "./retry.js";
+import type { Rubric, RubricQuestions, RubricResponse } from "./rubric.js";
 import {
   defaultRetryPolicy,
   isRetryable,
@@ -329,6 +330,21 @@ export class Client {
       await writeCassette(this.#record, await cassetteKey(body), `${pretty(response.raw)}\n`);
     }
     return response;
+  }
+
+  /**
+   * Ask a {@link Rubric}'s questions about `state` and read the answers back typed by it:
+   * `answers.department.choice` is one of the department's labels, and a misspelled name does not
+   * compile. The answers are checked against the rubric too, so an answer that is missing, of the
+   * wrong type, or a label the choice does not have is a {@link ResponseValidationError}.
+   */
+  async ask<R extends RubricQuestions>(
+    rubric: Rubric<R>,
+    state: Json,
+    options: CallOptions = {},
+  ): Promise<RubricResponse<R>> {
+    const response = await this.systemOne(state, rubric.questions, options);
+    return { answers: rubric.decode(response), response };
   }
 
   #decodeSystemOne(text: string, meta: ResponseMeta, endpoint: string): SystemOneResponse {

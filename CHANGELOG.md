@@ -5,6 +5,17 @@ pre-1.0, so a minor bump may still move the surface under you.
 
 ## Unreleased
 
+### Added
+
+- **Typed answers.** `rubric({...})` names a set of questions once, and `client.ask(rubric, state)`
+  returns `{ answers, response }` with every answer typed by its question: a noul's is a
+  `NoulAnswer`, a score's a `ScoreAnswer`, and a choice's `choice` is the union of its labels. A
+  misspelled name or a label the choice does not have no longer compiles, and the answers are
+  checked when they arrive — a missing one, one of the wrong type, or a label outside the choice
+  is a `ResponseValidationError` naming the field. `rubric.decode(response)` types a response you
+  already have. The counterpart of `response_model` in `typesafe-sdk` 0.7. `choice()` now keeps
+  its labels as literal types; code that passed labels built at run time still gets `string`.
+
 ### Changed
 
 - **The API key is checked the way `typesafe-sdk` 0.7 checks it.** Surrounding whitespace is
