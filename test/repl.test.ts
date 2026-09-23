@@ -1,5 +1,10 @@
 /** The REPL driven without a terminal: commands in, transcript and session out. */
 
+import { rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { App } from "../src/repl/app.js";
@@ -17,6 +22,7 @@ import { Buffer } from "../src/tui/buffer.js";
 import { char, ctrl, key } from "../src/tui/keys.js";
 import { line, linesText } from "../src/tui/style.js";
 import type { Json } from "../src/json.js";
+import { raw } from "../src/typesafe/questions.js";
 
 /**
  * Tests never talk to the API: without a key the app starts in mock mode, and with one in the
@@ -199,14 +205,15 @@ describe("generated code", () => {
     const a = app();
     a.exec(":preset triage");
     const code = codegen.typescript(a.session, "jev-2", 0.8);
-    expect(code).toContain('import { Client, choice, noul, score } from "jev-repl";');
-    expect(code).toContain("const res = await client.systemOne(");
+    expect(code).toContain('import { Client, choice, noul, rubric, score } from "jev-repl";');
+    expect(code).toContain("const questions = rubric({");
+    expect(code).toContain("const { answers } = await client.ask(");
     expect(code).toContain('department: choice("Which team should handle this", {');
     expect(code).toContain('billing: "Payment or subscription issues",');
     expect(code).toContain('frustration: score("How frustrated the customer appears", [');
     expect(code).toContain('{ model: "jev-2" }');
     expect(code).toContain("is_urgent.noul >= 0.80");
-    expect(code).toContain('const department = res.choice("department");');
+    expect(code).toContain("const department = answers.department;");
   });
 
   it("reflects the session in Rust", () => {
@@ -233,8 +240,8 @@ describe("generated code", () => {
     a.session.bars.set("frustration", 1);
     const ts = codegen.typescript(a.session, "jev-2", 0.5);
     expect(ts).toContain("is_urgent.noul >= 0.625");
-    expect(ts).toContain("department && department.confidence >= 0.75)");
-    expect(ts).toContain("if (frustration && frustration.confidence >= 1) {");
+    expect(ts).toContain("if (department.confidence >= 0.75) {");
+    expect(ts).toContain("if (frustration.confidence >= 1) {");
     expect(ts).toContain(
       "console.log(`frustration: unsure (${frustration.confidence.toFixed(2)}), send to a human`);",
     );
@@ -246,6 +253,30 @@ describe("generated code", () => {
     expect(codegen.typescript(a.session, "jev-2", 0.5)).toContain("is_urgent.noul >= 0.70");
     expect(codegen.rust(a.session, "jev-2", 0.5)).toContain("is_yes(0.70)");
   });
+
+  it("writes TypeScript that type-checks against this package", () => {
+    const a = app();
+    a.exec(":preset triage");
+    a.session.bars.set("frustration", 0.7);
+    a.session.questions.push(["needs-review", raw({ type: "noul", instructions: "Escalate?" })]);
+    const code = codegen.typescript(a.session, "jev-2", 0.8);
+    expect(code).toContain('answers["needs-review"]');
+    // The program as a user would save it, importing this checkout instead of the package.
+    const file = join(dirname(fileURLToPath(import.meta.url)), `.generated-${process.pid}.ts`);
+    writeFileSync(file, `${code.replace('from "jev-repl"', 'from "../src/index.js"')}export {};\n`);
+    try {
+      const { config } = ts.readConfigFile("tsconfig.json", (f) => ts.sys.readFile(f));
+      const { options } = ts.parseJsonConfigFileContent(config, ts.sys, process.cwd());
+      const program = ts.createProgram([file], { ...options, noEmit: true });
+      const problems = ts
+        .getPreEmitDiagnostics(program)
+        .filter((d) => d.file?.fileName === file)
+        .map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+      expect(problems).toEqual([]);
+    } finally {
+      rmSync(file, { force: true });
+    }
+  }, 30_000);
 
   it("says what to do when there is nothing to generate", () => {
     const a = app();

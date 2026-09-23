@@ -23,14 +23,17 @@ export interface NoulQuestion {
 }
 
 /** One option of a {@link ChoiceQuestion}: a label and its description (`null` when undescribed). */
-export type ChoiceOption = readonly [label: string, description: Json | null];
+export type ChoiceOption<L extends string = string> = readonly [label: L, description: Json | null];
 
-/** Pick one option from a set you define. */
-export interface ChoiceQuestion {
+/**
+ * Pick one option from a set you define. `L` is the union of its labels when they were written
+ * out literally, so a {@link rubric} can type the answer's `choice` as one of them.
+ */
+export interface ChoiceQuestion<L extends string = string> {
   readonly kind: "choice";
   readonly instructions?: Json;
   /** Options in the order they were added; answers report every label. */
-  readonly options: readonly ChoiceOption[];
+  readonly options: readonly ChoiceOption<L>[];
 }
 
 /** Rate the state along ordered levels; the answer is a probability-weighted level index. */
@@ -72,13 +75,13 @@ export function noul(instructions?: Json, criteria?: NoulCriteria): NoulQuestion
  * A choice between labels. Options are given as `{label: description}` (use `null` for an
  * undescribed label) or as ordered `[label, description]` pairs.
  */
-export function choice(
+export function choice<const L extends string = string>(
   instructions: Json,
-  options: Readonly<Record<string, Json | null>> | readonly ChoiceOption[] = [],
-): ChoiceQuestion {
-  const pairs: ChoiceOption[] = Array.isArray(options)
-    ? (options as readonly ChoiceOption[]).map(([label, desc]) => [label, desc] as const)
-    : Object.entries(options as Record<string, Json | null>).map(
+  options: Readonly<Record<L, Json | null>> | readonly ChoiceOption<L>[] = [],
+): ChoiceQuestion<L> {
+  const pairs: ChoiceOption<L>[] = Array.isArray(options)
+    ? (options as readonly ChoiceOption<L>[]).map(([label, desc]) => [label, desc] as const)
+    : (Object.entries(options) as Array<[L, Json | null]>).map(
         ([label, desc]) => [label, desc] as const,
       );
   return { kind: "choice", instructions, options: pairs };

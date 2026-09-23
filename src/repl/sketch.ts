@@ -485,6 +485,13 @@ function finishQuestion(b: Block, out: ParsedSketch): void {
       problem(b.line, "a score needs at least two levels, lowest first");
       return;
     }
+    if (levels.length > MAX_SCORE_LEVELS) {
+      problem(
+        b.line,
+        `a score takes at most ${MAX_SCORE_LEVELS} levels, this one has ${levels.length}`,
+      );
+      return;
+    }
     out.questions.push([b.name, makeScore(instructions, levels)]);
     return;
   }
@@ -513,8 +520,19 @@ function finishQuestion(b: Block, out: ParsedSketch): void {
     );
     return;
   }
+  if (options.length > MAX_CHOICE_OPTIONS) {
+    problem(
+      b.line,
+      `a choice takes at most ${MAX_CHOICE_OPTIONS} options, this one has ${options.length}`,
+    );
+    return;
+  }
   out.questions.push([b.name, makeChoice(instructions, options)]);
 }
+
+/** The API's limits, from the primitives docs: a score has 2–10 levels, a choice up to 255 options. */
+export const MAX_SCORE_LEVELS = 10;
+export const MAX_CHOICE_OPTIONS = 255;
 
 /**
  * Split on `sep`, except inside a double-quoted JSON string — so a quoted value can carry the

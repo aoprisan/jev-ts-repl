@@ -5,5 +5,6 @@ export * from "./errors.js";
 export * from "./questions.js";
 export * from "./responses.js";
 export * from "./retry.js";
+export * from "./rubric.js";
 export * from "./cassette.js";
 export * from "./client.js";

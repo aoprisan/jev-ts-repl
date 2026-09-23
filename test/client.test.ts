@@ -110,8 +110,30 @@ describe("configuration", () => {
     expect(() => new Client({ apiKey: "k", baseUrl: "not a url" })).toThrow(ConfigError);
   });
 
+  it("trims the API key and rejects one the API cannot accept", () => {
+    expect(() => new Client({ apiKey: "  sk-test\n" })).not.toThrow();
+    for (const bad of ["", "   ", "sk test", "sk\ttest", "sk-\x7f", "sk-é"]) {
+      expect(() => new Client({ apiKey: bad }), JSON.stringify(bad)).toThrow(
+        bad.trim() === "" ? /No API key/ : /printable ASCII/,
+      );
+    }
+  });
+
   it("rejects a non-positive timeout", () => {
     expect(() => new Client({ apiKey: "k", timeoutMs: 0 })).toThrow(ConfigError);
+  });
+
+  it("goes through an AI gateway: a path of its own, and a key of its own", async () => {
+    const { fetch, calls } = stubFetch([json(ANSWERS)]);
+    const c = client(fetch, {
+      baseUrl: "https://gateway.example.test/v1/acct/gw/typesafe/",
+      headers: { "cf-aig-authorization": "Bearer gw-key" },
+    });
+    await c.systemOne("x", { a: noul("y") });
+    expect(calls[0]?.url).toBe("https://gateway.example.test/v1/acct/gw/typesafe/v1/systemone");
+    const headers = calls[0]?.init.headers as Record<string, string>;
+    expect(headers["cf-aig-authorization"]).toBe("Bearer gw-key");
+    expect(headers["authorization"]).toBe("Bearer sk-test");
   });
 
   it("defaults the model and trims the base URL", async () => {
@@ -316,6 +338,36 @@ describe("errors and retries", () => {
     await expect(
       client(fetch, { retry: { maxRetries: 0 } }).systemOne("x", { a: noul("y") }),
     ).rejects.toBeInstanceOf(ConnectionError);
+  });
+
+  it("keeps URL credentials and the key out of a ConnectionError", async () => {
+    const error = await new Client({
+      apiKey: "sk-secret",
+      baseUrl: "http://user:hunter2@127.0.0.1:1",
+      retry: { maxRetries: 0 },
+      fetch: (async (url: string) => {
+        throw new TypeError(`bad ${url} with sk-secret`, { cause: new Error(`inner ${url}`) });
+      }) as unknown as typeof globalThis.fetch,
+    })
+      .systemOne("x", { a: noul("y") })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectionError);
+    const text = `${String(error)} ${String((error as Error).cause)} ${String(
+      ((error as Error).cause as Error).cause,
+    )}`;
+    expect(text).toContain("user:***@127.0.0.1");
+    expect(text).not.toMatch(/hunter2|sk-secret/);
+  });
+
+  it("names a bad model entry by its index", async () => {
+    const { fetch } = stubFetch([
+      json({ models: [{ name: "a", description: "", release_date: "" }, {}] }),
+    ]);
+    const error = await client(fetch)
+      .models()
+      .list()
+      .catch((e: unknown) => e);
+    expect((error as ResponseValidationError).fieldPath).toBe("models[1].name");
   });
 
   it("times an attempt out", async () => {

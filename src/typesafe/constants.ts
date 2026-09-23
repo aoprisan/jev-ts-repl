@@ -19,7 +19,7 @@ export const DEFAULT_MODEL = "jev-latest";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Package version, sent in `User-Agent` and `X-TypeSafe-SDK`. */
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 /** SDK identifier sent in `User-Agent` and `X-TypeSafe-SDK`. */
 export const SDK_NAME = "jev-repl-ts";
 

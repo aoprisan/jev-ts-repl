@@ -3,6 +3,45 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## 0.8.0
+
+### Added
+
+- **Typed answers.** `rubric({...})` names a set of questions once, and `client.ask(rubric, state)`
+  returns `{ answers, response }` with every answer typed by its question: a noul's is a
+  `NoulAnswer`, a score's a `ScoreAnswer`, and a choice's `choice` is the union of its labels. A
+  misspelled name or a label the choice does not have no longer compiles, and the answers are
+  checked when they arrive — a missing one, one of the wrong type, or a label outside the choice
+  is a `ResponseValidationError` naming the field. `rubric.decode(response)` types a response you
+  already have. The counterpart of `response_model` in `typesafe-sdk` 0.7. `choice()` now keeps
+  its labels as literal types; code that passed labels built at run time still gets `string`.
+- **`jev ts` writes the typed version.** The program it prints puts the page's questions in a
+  `rubric` and reads `answers.<name>` from `client.ask`, so the code it hands you type-checks
+  against the page: no `undefined` checks, and a choice's label is one of its own. A test compiles
+  the generated program against the package on every run. The skill's SDK example teaches the
+  same.
+
+### Changed
+
+- **The API key is checked the way `typesafe-sdk` 0.7 checks it.** Surrounding whitespace is
+  trimmed from an explicit key as well as from `TYPESAFE_API_KEY`, and a key with whitespace,
+  control or non-ASCII characters inside it is a `ConfigError` before anything is sent.
+- **A bad model entry is named by its index:** `models[1].name`, as the Python SDK names it, where
+  it used to be `models.1.name`.
+
+- **`jev check` holds a page to the API's limits.** A score with more than 10 levels or a choice
+  with more than 255 options is now a problem on its line, as the primitives docs set them,
+  instead of a request the API refuses.
+
+### Fixed
+
+- **The skill no longer promises a rationale.** It told agents every answer carries a confidence
+  and a short rationale; a noul's probability is its own confidence, and no answer has a
+  rationale.
+- **A `ConnectionError` no longer quotes the password of a base URL back.** fetch refuses a URL
+  with credentials in it by printing the whole URL; the password, the query and the key are now
+  masked in the error's message and in its cause.
+
 ## 0.7.0
 
 ### Added

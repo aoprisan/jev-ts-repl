@@ -13,7 +13,10 @@ description: >-
 
 TypeSafe System One answers **named questions about one piece of text** in a single
 call. You send a `state` (the text or JSON to judge) and a set of questions; you get
-back one answer per question, each with a confidence and a short rationale.
+back one answer per question as a distribution, never as text: a noul is the probability
+of yes (that probability is its own confidence), a choice is the winning label with a
+probability per label and a confidence, and a score is the probability-weighted level
+with a probability per level and a confidence. There is no rationale to read.
 
 There are three kinds of question:
 
@@ -101,6 +104,8 @@ also stops a run being reproducible from its page.
 - Choice labels need descriptions whenever the label alone is ambiguous, and should
   cover the input — add `other` rather than forcing a wrong bucket.
 - Score levels go lowest to highest and should be distinguishable by a stranger.
+- A choice takes at most 255 options and a score between 2 and 10 levels; the API
+  refuses anything outside that, and `jev check` says so first.
 - A noul's answer is a probability; compare it against a threshold you pick
   (`--threshold`, default `0.5`) rather than treating it as a bare boolean.
 
@@ -179,14 +184,16 @@ them over shelling out, and pass the page as text rather than writing a temp fil
 ## Writing code against the SDK
 
 `jev ts` and `jev rust` print a working program for the current page — start there
-instead of writing a client by hand. The shape is the same in both languages: build
-named questions, send one request, read the answers back by name.
+instead of writing a client by hand. The shape is the same in both languages: name the
+questions once, send one request, read the answers back by name.
+
+In TypeScript, put fixed questions in a `rubric` and `ask` it: every answer is typed by
+its question, a misspelled name does not compile, and a choice's label is one of its own.
 
 ```ts
-import { Client, choice, noul, score } from "jev-repl";
+import { Client, choice, noul, rubric, score } from "jev-repl";
 
-const client = Client.fromEnv(); // TYPESAFE_API_KEY
-const res = await client.systemOne("The payout failed again.", {
+const triage = rubric({
   is_urgent: noul("The message conveys urgency"),
   department: choice("Which team should handle this", {
     billing: "Payment or subscription issues",
@@ -194,9 +201,16 @@ const res = await client.systemOne("The payout failed again.", {
   }),
   frustration: score("How frustrated the customer is", ["Calm", "Annoyed", "Furious"]),
 });
-res.noul("is_urgent")?.noul; // a probability
-res.choice("department")?.choice; // a label
+
+const client = Client.fromEnv(); // TYPESAFE_API_KEY
+const { answers } = await client.ask(triage, "The payout failed again.");
+answers.is_urgent.noul; // a probability
+answers.department.choice; // "billing" | "technical"
 ```
+
+An answer that comes back missing, of the wrong type, or with a label the choice does not
+have is a `ResponseValidationError` naming the field. Use `client.systemOne` directly only
+when the questions are built at run time.
 
 Keep the API key in the environment; never write it into a page, a config file or a
 committed example.

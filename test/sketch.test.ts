@@ -140,6 +140,16 @@ describe("the notation", () => {
       ["text\n---\ndept: Which team\n", 2, "add options"],
       ["text\n---\ndept: Which team\n  billing\n", 2, "one option is not a choice"],
       ["text\n---\ntone: Rate it\n  only < \n", 2, "at least two levels"],
+      [
+        `text\n---\nsev: How bad\n  ${Array.from({ length: 11 }, (_, i) => `l${i}`).join(" < ")}\n`,
+        2,
+        "at most 10 levels, this one has 11",
+      ],
+      [
+        `text\n---\ntag: Which\n${Array.from({ length: 256 }, (_, i) => `  o${i}\n`).join("")}`,
+        2,
+        "at most 255 options, this one has 256",
+      ],
       ["text\n---\nok? Fine\n  maybe = so\n", 3, "only takes `yes"],
       ["text\n---\nsev: How bad\n  a < b\n  maybe = so\n", 2, "are mixed"],
       ["text\n---\nx? one\nx? two\n", 3, "already named"],
@@ -156,6 +166,12 @@ describe("the notation", () => {
       expect(problem?.line, JSON.stringify(page)).toBe(line);
       expect(problem?.message, JSON.stringify(page)).toContain(expected);
     }
+    // The limits themselves are fine.
+    const ten = Array.from({ length: 10 }, (_, i) => `l${i}`).join(" < ");
+    const options = Array.from({ length: 255 }, (_, i) => `  o${i}\n`).join("");
+    expect(
+      sketch.parse(`text\n---\nsev: How bad\n  ${ten}\ntag: Which\n${options}`).problems,
+    ).toEqual([]);
     // A broken question drops out; the good ones stay.
     const parsed = sketch.parse("text\n---\na? fine\nb: broken\nc? also fine\n");
     expect(parsed.questions.map(([n]) => n)).toEqual(["a", "c"]);
