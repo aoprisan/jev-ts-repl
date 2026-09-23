@@ -27,7 +27,8 @@ shapes can be learned offline.
 <Enter>                                          # send; answers come back with their distributions
 ```
 
-- `:lesson` walks an eleven-step track from "what is a noul" to what a call costs.
+- `:lesson` walks an eleven-step track from "what is a noul", past what a call costs, to taking
+  the session out as code.
 - `:sketch` (Ctrl-K) opens the whole request as one page of text, with the question types read
   off the punctuation, a gutter that says what each line became, and a live preview of the JSON,
   simulated answers, the same request as TypeScript, or what a call would cost:
@@ -173,6 +174,7 @@ The cases are JSON Lines, one labelled state per line. `state` is what to judge 
 JSON — and `expect` names the questions on the page it is labelled for; questions it leaves out are
 still asked and simply not scored. An `id` is optional and shows up in the report.
 
+<!-- prettier-ignore -->
 ```jsonl
 {"id": "t-001", "state": "Stripe has been failing for 3 days, I'm losing sales", "expect": {"is_urgent": true, "department": "technical", "frustration": 2}}
 {"state": {"subject": "Invoice question", "body": "Can I get a copy of last month's invoice?"}, "expect": {"department": "billing", "is_urgent": false}}
@@ -207,30 +209,9 @@ for the first two turns and true from the third on (`{"by_turn": null}`: never);
 sent once per turn, each prefix is scored as a case of its own, and the case's other labels apply
 to the whole conversation only. The noul's block gains a line that says when it noticed:
 
+<!-- prettier-ignore -->
 ```jsonl
-{
-  "id": "t-9",
-  "state": [
-    {
-      "who": "customer",
-      "said": "Hi"
-    },
-    {
-      "who": "customer",
-      "said": "It is down"
-    },
-    {
-      "who": "customer",
-      "said": "We lose money every minute"
-    }
-  ],
-  "expect": {
-    "is_urgent": {
-      "by_turn": 3
-    },
-    "department": "technical"
-  }
-}
+{"id": "t-9", "state": [{"who": "customer", "said": "Hi"}, {"who": "customer", "said": "It is down"}, {"who": "customer", "said": "We lose money every minute"}], "expect": {"is_urgent": {"by_turn": 3}, "department": "technical"}}
 ```
 
 ```text
@@ -372,6 +353,26 @@ const client = new Client({
 });
 ```
 
+The REPL's own pieces are exported too (`App`, `Session`, `sketch`, `codegen`, `mock`, the terminal
+buffer), so a session can be driven, rendered or snapshot-tested without a terminal.
+
+`jev-repl/core` is the same thing minus the terminal — no `node:` imports, no `process`, no stdin —
+so it also runs in a browser or a worker:
+
+```ts
+import { codegen, cost, evaluate, headless, mock, sketch } from "jev-repl/core";
+
+const page = sketch.parse("A payout failed again.\n---\nis_urgent? The message conveys urgency");
+const session = page.toSession();
+session.requestJson("jev-latest"); // the exact body
+codegen.typescript(session, "jev-latest", 0.5); // the same session as code
+mock.answer(session.state, "is_urgent", session.questionsJson()["is_urgent"]); // offline answer
+cost.estimate(session, "jev-latest"); // tokens in, tokens out, per question
+cost.price(228, 186, { input: 0.2, output: 1 }).total; // dollars, at rates you supply
+headless.answersText(headless.mockAnswers(session), 0.5); // what `jev run` prints
+evaluate.parseCases(text, session); // labelled states, checked against these questions
+```
+
 ### Recording and replaying
 
 A test that talks to the API costs money, needs a key and answers differently tomorrow. Record the
@@ -401,26 +402,6 @@ to name a file the same way.
 A cassette directory is a `jev eval --cache` directory: same key, same file. Replay the cache of an
 eval run, or point `--cache` at what a test recorded. Record and replay read and write files, so
 they work in Node, not the browser.
-
-The REPL's own pieces are exported too (`App`, `Session`, `sketch`, `codegen`, `mock`, the terminal
-buffer), so a session can be driven, rendered or snapshot-tested without a terminal.
-
-`jev-repl/core` is the same thing minus the terminal — no `node:` imports, no `process`, no stdin —
-so it also runs in a browser or a worker:
-
-```ts
-import { codegen, cost, evaluate, headless, mock, sketch } from "jev-repl/core";
-
-const page = sketch.parse("A payout failed again.\n---\nis_urgent? The message conveys urgency");
-const session = page.toSession();
-session.requestJson("jev-latest"); // the exact body
-codegen.typescript(session, "jev-latest", 0.5); // the same session as code
-mock.answer(session.state, "is_urgent", session.questionsJson()["is_urgent"]); // offline answer
-cost.estimate(session, "jev-latest"); // tokens in, tokens out, per question
-cost.price(228, 186, { input: 0.2, output: 1 }).total; // dollars, at rates you supply
-headless.answersText(headless.mockAnswers(session), 0.5); // what `jev run` prints
-evaluate.parseCases(text, session); // labelled states, checked against these questions
-```
 
 ## On the web
 
@@ -519,7 +500,8 @@ terminals that send only that.
 
 ```sh
 npm install
-npm test          # vitest
+npm test          # build, then vitest
+npm run lint      # prettier --check, as CI and releases run it
 npm run typecheck
 npm run build     # dist/, what npm publishes
 npm run build:web # site/, the installable web REPL
@@ -545,7 +527,7 @@ and `src/typesafe/constants.ts` — a test fails when those disagree — write w
 `CHANGELOG.md`, and land it on `main`. Then tag the merge commit:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.7.0 && git push origin v0.7.0   # the version now in package.json
 ```
 
 The workflow refuses a tag that does not match the version in the manifest, and lints, typechecks,

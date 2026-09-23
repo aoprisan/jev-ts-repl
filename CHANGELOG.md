@@ -7,9 +7,9 @@ pre-1.0, so a minor bump may still move the surface under you.
 
 ### Added
 
-- **Two pages, one set of cases, and whether the difference is real.** `jev eval a.jev --compare
-b.jev --cases cases.jsonl` runs both pages over the same labelled states and reports, per
-  question they share, the change in Brier, accuracy and F1 (or exact, within one and MAE for a
+- **Two pages, one set of cases, and whether the difference is real.**
+  `jev eval a.jev --compare b.jev --cases cases.jsonl` runs both pages over the same labelled
+  states and reports, per question they share, the change in Brier, accuracy and F1 (or exact, within one and MAE for a
   score), the cases whose answer flipped — `fixed`, `broke` or `changed` — and an exact McNemar
   test over the cases one page got right and the other wrong, which says "too few" instead of a
   p-value when there are fewer than six. Both runs share one cost estimate, one pool of workers and
@@ -44,8 +44,8 @@ b.jev --cases cases.jsonl` runs both pages over the same labelled states and rep
   `{ replay: dir }`) answers from there with no network and no API key. A request with no
   recording throws the new `ReplayMissError`, with the `key` and `path` it looked for, and never
   falls back to a live call. Setting both is a `ConfigError`.
-- New `cassetteKey` on both exports: the SHA-256 of a compact request body, in hex. `jev eval
---cache` now uses it too, unchanged, so a cassette directory and an eval cache are
+- New `cassetteKey` on both exports: the SHA-256 of a compact request body, in hex.
+  `jev eval --cache` now uses it too, unchanged, so a cassette directory and an eval cache are
   interchangeable. A test pins the digest of a fixture, for the other SDKs to match.
 
 ## 0.6.0
