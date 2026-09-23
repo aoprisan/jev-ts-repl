@@ -123,6 +123,19 @@ describe("configuration", () => {
     expect(() => new Client({ apiKey: "k", timeoutMs: 0 })).toThrow(ConfigError);
   });
 
+  it("goes through an AI gateway: a path of its own, and a key of its own", async () => {
+    const { fetch, calls } = stubFetch([json(ANSWERS)]);
+    const c = client(fetch, {
+      baseUrl: "https://gateway.example.test/v1/acct/gw/typesafe/",
+      headers: { "cf-aig-authorization": "Bearer gw-key" },
+    });
+    await c.systemOne("x", { a: noul("y") });
+    expect(calls[0]?.url).toBe("https://gateway.example.test/v1/acct/gw/typesafe/v1/systemone");
+    const headers = calls[0]?.init.headers as Record<string, string>;
+    expect(headers["cf-aig-authorization"]).toBe("Bearer gw-key");
+    expect(headers["authorization"]).toBe("Bearer sk-test");
+  });
+
   it("defaults the model and trims the base URL", async () => {
     const { fetch, calls } = stubFetch([json(ANSWERS)]);
     const c = new Client({ apiKey: "k", baseUrl: "https://api.example.test/", fetch });
