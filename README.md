@@ -372,6 +372,45 @@ const client = new Client({
 });
 ```
 
+`ApiError` has a subclass per status — `BadRequestError`, `AuthenticationError`,
+`PermissionDeniedError`, `NotFoundError`, `UnprocessableEntityError`, `RateLimitError` and
+`InternalServerError` (5xx) — so `instanceof` narrows to the failure you care about.
+`isTypeSafeError` recognises any SDK error, even one from a second copy of the package where
+`instanceof` does not:
+
+```ts
+import { ApiError, RateLimitError, isTypeSafeError } from "jev-repl";
+
+try {
+  await client.systemOne(text, questions);
+} catch (e) {
+  if (e instanceof RateLimitError) {
+    console.warn(`rate limited; the server asked for ${e.retryAfterMs() ?? "?"} ms`);
+  } else if (e instanceof ApiError) {
+    console.error(e.status, e.detail, e.requestId);
+  } else if (isTypeSafeError(e)) {
+    console.error(e.name, e.message); // ConnectionError, TimeoutError, ...
+  } else {
+    throw e;
+  }
+}
+```
+
+Every call takes a `signal` to cancel it from outside, retry waits included. An aborted call
+rejects with the abort error, not a `TypeSafeError`:
+
+```ts
+const controller = new AbortController();
+const pending = client.systemOne(text, questions, { signal: controller.signal });
+controller.abort(); // e.g. the user navigated away
+
+// Or give the whole call, retries and all, a deadline:
+await client.systemOne(text, questions, { signal: AbortSignal.timeout(15_000) });
+```
+
+Pass `env` to read configuration from a record of your own instead of `process.env` —
+`new Client({ env: {}, apiKey })` ignores the environment entirely.
+
 ### Typed answers
 
 `res.choice("department")` is a `ChoiceAnswer | undefined` whose `choice` is any string. When the

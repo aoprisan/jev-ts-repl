@@ -3,6 +3,35 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **An error class per status.** A failed call throws `BadRequestError`, `AuthenticationError`,
+  `PermissionDeniedError`, `NotFoundError`, `UnprocessableEntityError`, `RateLimitError` or
+  `InternalServerError`, all subclasses of `ApiError`, so `instanceof RateLimitError` works;
+  `ApiError.from(status, …)` picks one. `kind` is unchanged.
+- **`isTypeSafeError(e)`** recognises an SDK error from another copy of the package or another
+  realm, where `instanceof` does not.
+- **`env` option.** `new Client({ env: {} })` ignores the environment, so a stray
+  `TYPESAFE_REPLAY` or `TYPESAFE_API_KEY` cannot reach a client you configure by hand.
+- A `default` export condition, for tools that do not match `import`.
+
+### Changed
+
+- Error names are spelled out per class rather than read from the constructor, so they survive
+  minification. A subclass of your own that sets no `name` now reports its parent's.
+- `ConnectionError` passes its cause to `Error`'s constructor.
+
+### Fixed
+
+- A one-shot command (`jev run`, `jev eval`, `jev ask`) no longer exits 0 without an answer while
+  waiting to retry a 429 or 5xx.
+- A signal aborted before the call stops it before anything is sent, and an abort ends a retry
+  wait.
+- A choice that lists an option twice is a problem rather than a silent merge.
+- The skill's example page passes `jev check`, and its `@model` line sets the model.
+
 ## 0.8.0
 
 ### Added

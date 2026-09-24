@@ -35,7 +35,7 @@ export const REQUEST_ID_HEADER = "x-typesafe-request-id";
 export const RETRY_AFTER_HEADER = "retry-after";
 export const RETRY_AFTER_MS_HEADER = "retry-after-ms";
 
-export const SECRET_HEADERS = [
+export const SECRET_HEADERS: readonly string[] = [
   "authorization",
   "proxy-authorization",
   "x-api-key",
