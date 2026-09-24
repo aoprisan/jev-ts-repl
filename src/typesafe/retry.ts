@@ -118,10 +118,22 @@ export function backoffMs(
   return Math.min(exponential, rounded) * 1000;
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    // A pending retry should never be the only thing keeping the process alive.
-    timer.unref?.();
+/**
+ * Waits out a retry backoff. The timer stays referenced: during a backoff it is the only thing
+ * keeping a one-shot command alive, and an unreferenced one lets Node exit 0 mid-call. An abort
+ * ends the wait at once, with the signal's reason, as it would end the request.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

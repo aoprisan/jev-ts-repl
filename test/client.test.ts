@@ -380,6 +380,31 @@ describe("errors and retries", () => {
     ).rejects.toBeInstanceOf(TimeoutError);
   });
 
+  it("does not send when the signal is already aborted", async () => {
+    let sent = false;
+    const fetch = ((_url: string, init: RequestInit) => {
+      sent = !init.signal?.aborted;
+      return Promise.reject(new Error("aborted"));
+    }) as unknown as typeof globalThis.fetch;
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      client(fetch).systemOne("x", { a: noul("y") }, { signal: ac.signal }),
+    ).rejects.toThrow();
+    expect(sent).toBe(false);
+  });
+
+  it("ends a retry wait when the signal aborts", async () => {
+    const { fetch, calls } = stubFetch([new Response("{}", { status: 503 }), json({})]);
+    const ac = new AbortController();
+    const pending = client(fetch, {
+      retry: { backoffInitialMs: 20_000, backoffMaxMs: 20_000, backoffJitter: 0 },
+    }).systemOne("x", { a: noul("y") }, { signal: ac.signal });
+    setTimeout(() => ac.abort(new Error("stop")), 10);
+    await expect(pending).rejects.toThrow("stop");
+    expect(calls.length).toBe(1);
+  });
+
   it("computes backoff the way the other SDKs do", () => {
     const delay = (attempt: number): number => backoffMs(attempt, 500, 5000, 0.25, 0);
     expect(delay(1)).toBe(500);

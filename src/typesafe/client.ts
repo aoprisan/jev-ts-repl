@@ -454,7 +454,7 @@ export class Client {
         if (!(error instanceof TypeSafeError) || !isRetryable(retry, error)) throw error;
         const delay = retryDelayMs(retry, attempts, error);
         if (shouldStop(retry, attempts, Date.now() - started, delay)) throw error;
-        if (delay > 0) await sleep(delay);
+        if (delay > 0) await sleep(delay, options.signal);
       }
     }
   }
@@ -476,6 +476,8 @@ export class Client {
     }, timeoutMs);
     timer.unref?.();
     const onAbort = () => controller.abort();
+    // An "abort" event never fires again for a signal that is already aborted.
+    if (signal?.aborted) controller.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const response = await this.#fetch(url, {
