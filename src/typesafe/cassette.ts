@@ -16,6 +16,7 @@ import { TypeSafeError } from "./errors.js";
 
 /** A request with no recording in the replay directory. Nothing was sent. */
 export class ReplayMissError extends TypeSafeError {
+  override readonly name: string = "ReplayMissError";
   /** The cassette key the request hashed to. */
   readonly key: string;
   /** The file that was expected to hold its response. */

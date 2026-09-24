@@ -19,11 +19,23 @@ import {
 /** Response headers, lowercased. */
 export type Headers = Record<string, string>;
 
+/**
+ * Marks every {@link TypeSafeError}. A registered symbol, so {@link isTypeSafeError} recognises an
+ * error thrown by another copy of the SDK or from another realm, where `instanceof` does not.
+ */
+const BRAND: unique symbol = Symbol.for("typesafe.error");
+
 /** Any failure produced by the SDK. */
 export class TypeSafeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = new.target.name;
+  /**
+   * The class name, spelled out so it survives minification. Each subclass declares its own; a
+   * field initialiser runs after `super()`, so the most derived class's value wins.
+   */
+  override readonly name: string = "TypeSafeError";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    Object.defineProperty(this, BRAND, { value: true });
   }
 
   /** The HTTP status associated with this error, if any. */
@@ -41,13 +53,17 @@ export class TypeSafeError extends Error {
  * The client could not be configured (missing API key, invalid base URL, invalid timeout,
  * invalid retry policy).
  */
-export class ConfigError extends TypeSafeError {}
+export class ConfigError extends TypeSafeError {
+  override readonly name: string = "ConfigError";
+}
 
 /**
  * The request was rejected locally before being sent (no questions, empty choice or score
  * criteria, malformed raw question, or a body that cannot be encoded as JSON).
  */
-export class InvalidRequestError extends TypeSafeError {}
+export class InvalidRequestError extends TypeSafeError {
+  override readonly name: string = "InvalidRequestError";
+}
 
 /** Classification of an unsuccessful HTTP status. */
 export type ApiErrorKind =
@@ -80,8 +96,24 @@ export function apiErrorKind(status: number): ApiErrorKind {
   }
 }
 
-/** The server returned an unsuccessful HTTP status after any retries. */
+/**
+ * `true` for any error the SDK throws, including one from another copy of the SDK or another realm
+ * (where `instanceof TypeSafeError` is `false`).
+ */
+export function isTypeSafeError(error: unknown): error is TypeSafeError {
+  return (
+    typeof error === "object" && error !== null && (error as { [BRAND]?: unknown })[BRAND] === true
+  );
+}
+
+/**
+ * The server returned an unsuccessful HTTP status after any retries.
+ *
+ * The SDK throws the subclass for the status ({@link RateLimitError} for a 429, and so on), so
+ * `instanceof ApiError` catches them all and `kind` still classifies the status.
+ */
 export class ApiError extends TypeSafeError {
+  override readonly name: string = "ApiError";
   /** HTTP status code. */
   readonly httpStatus: number;
   /** Classification of `httpStatus`. */
@@ -128,6 +160,68 @@ export class ApiError extends TypeSafeError {
   retryAfterMs(): number | undefined {
     return parseRetryAfter(this.headers);
   }
+
+  /** The {@link ApiError} subclass for `status`, or a plain `ApiError` for one without its own. */
+  static from(
+    status: number,
+    body: Json | undefined,
+    headers: Headers,
+    endpoint?: string,
+  ): ApiError {
+    switch (apiErrorKind(status)) {
+      case "BadRequest":
+        return new BadRequestError(status, body, headers, endpoint);
+      case "Authentication":
+        return new AuthenticationError(status, body, headers, endpoint);
+      case "PermissionDenied":
+        return new PermissionDeniedError(status, body, headers, endpoint);
+      case "NotFound":
+        return new NotFoundError(status, body, headers, endpoint);
+      case "UnprocessableEntity":
+        return new UnprocessableEntityError(status, body, headers, endpoint);
+      case "RateLimit":
+        return new RateLimitError(status, body, headers, endpoint);
+      case "InternalServer":
+        return new InternalServerError(status, body, headers, endpoint);
+      case "Other":
+        return new ApiError(status, body, headers, endpoint);
+    }
+  }
+}
+
+/** HTTP 400. */
+export class BadRequestError extends ApiError {
+  override readonly name: string = "BadRequestError";
+}
+
+/** HTTP 401: the API key is missing, malformed or revoked. */
+export class AuthenticationError extends ApiError {
+  override readonly name: string = "AuthenticationError";
+}
+
+/** HTTP 403: the key is valid but not allowed to do this. */
+export class PermissionDeniedError extends ApiError {
+  override readonly name: string = "PermissionDeniedError";
+}
+
+/** HTTP 404. */
+export class NotFoundError extends ApiError {
+  override readonly name: string = "NotFoundError";
+}
+
+/** HTTP 422: the server rejected the request body. */
+export class UnprocessableEntityError extends ApiError {
+  override readonly name: string = "UnprocessableEntityError";
+}
+
+/** HTTP 429. {@link ApiError.retryAfterMs} says how long the server asked to wait. */
+export class RateLimitError extends ApiError {
+  override readonly name: string = "RateLimitError";
+}
+
+/** HTTP 500 or above. */
+export class InternalServerError extends ApiError {
+  override readonly name: string = "InternalServerError";
 }
 
 /**
@@ -135,15 +229,17 @@ export class ApiError extends TypeSafeError {
  * reset, body read). The underlying failure is available as `cause`.
  */
 export class ConnectionError extends TypeSafeError {
+  override readonly name: string = "ConnectionError";
+
   constructor(cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    super(`Connection error: ${detail}`);
-    this.cause = cause;
+    super(`Connection error: ${detail}`, { cause });
   }
 }
 
 /** The request exceeded its configured timeout. */
 export class TimeoutError extends TypeSafeError {
+  override readonly name: string = "TimeoutError";
   /** The per-attempt timeout that elapsed, in milliseconds. */
   readonly timeoutMs: number;
 
@@ -155,6 +251,7 @@ export class TimeoutError extends TypeSafeError {
 
 /** A successful response whose body is missing or has structurally invalid required data. */
 export class ResponseValidationError extends TypeSafeError {
+  override readonly name: string = "ResponseValidationError";
   /** HTTP status code (2xx). */
   readonly httpStatus: number;
   /** Dotted path to the offending field, e.g. `answers.tone.confidence`. */

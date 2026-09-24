@@ -77,6 +77,12 @@ export interface ClientOptions {
    * {@link ReplayMissError}. Node only.
    */
   replay?: string;
+  /**
+   * Read the environment variables above from this record instead of Node's environment: `{}`
+   * ignores the environment entirely, which keeps a stray `TYPESAFE_REPLAY` or `TYPESAFE_API_KEY`
+   * out of tests and multi-tenant servers. Default: Node's environment, nothing in a browser.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 /** Per-call overrides. */
@@ -99,12 +105,11 @@ export interface CallOptions {
 }
 
 /**
- * Node's environment, or nothing at all. The client runs in a browser too, where `process` does
- * not exist and the key is passed in explicitly.
+ * A variable from `source`, else Node's environment, or nothing at all. The client runs in a
+ * browser too, where `process` does not exist and the key is passed in explicitly.
  */
-function env(name: string): string | undefined {
-  const source: Record<string, string | undefined> | undefined =
-    typeof process === "undefined" ? undefined : process.env;
+function env(name: string, source?: Record<string, string | undefined>): string | undefined {
+  source ??= typeof process === "undefined" ? undefined : process.env;
   const value = source?.[name];
   if (value === undefined) return undefined;
   const trimmed = value.trim();
@@ -225,8 +230,8 @@ export class Client {
   constructor(options: ClientOptions = {}) {
     // Either option set by hand decides the mode; the environment only speaks when neither is.
     const explicit = options.record !== undefined || options.replay !== undefined;
-    const record = explicit ? options.record : env(RECORD_ENV);
-    const replay = explicit ? options.replay : env(REPLAY_ENV);
+    const record = explicit ? options.record : env(RECORD_ENV, options.env);
+    const replay = explicit ? options.replay : env(REPLAY_ENV, options.env);
     if (record !== undefined && replay !== undefined) {
       throw new ConfigError(
         explicit
@@ -243,7 +248,7 @@ export class Client {
       }
     }
 
-    const apiKey = (options.apiKey ?? env(API_KEY_ENV))?.trim() || undefined;
+    const apiKey = (options.apiKey ?? env(API_KEY_ENV, options.env))?.trim() || undefined;
     if (replay === undefined && apiKey === undefined) {
       throw new ConfigError(
         `No API key was provided. Pass apiKey or set the ${API_KEY_ENV} environment variable.`,
@@ -254,13 +259,16 @@ export class Client {
         "API key must contain only printable ASCII characters without whitespace.",
       );
     }
-    const baseUrl = (options.baseUrl ?? env(BASE_URL_ENV) ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const baseUrl = (options.baseUrl ?? env(BASE_URL_ENV, options.env) ?? DEFAULT_BASE_URL).replace(
+      /\/+$/,
+      "",
+    );
     checkBaseUrl(baseUrl);
     const retry = { ...defaultRetryPolicy(), ...options.retry };
     validateRetryPolicy(retry);
 
     this.#baseUrl = baseUrl;
-    this.#model = options.model ?? env(DEFAULT_MODEL_ENV) ?? DEFAULT_MODEL;
+    this.#model = options.model ?? env(DEFAULT_MODEL_ENV, options.env) ?? DEFAULT_MODEL;
     this.#timeoutMs = checkTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.#retry = retry;
     this.#headers = { ...options.headers };
@@ -454,7 +462,7 @@ export class Client {
         if (!(error instanceof TypeSafeError) || !isRetryable(retry, error)) throw error;
         const delay = retryDelayMs(retry, attempts, error);
         if (shouldStop(retry, attempts, Date.now() - started, delay)) throw error;
-        if (delay > 0) await sleep(delay);
+        if (delay > 0) await sleep(delay, options.signal);
       }
     }
   }
@@ -476,6 +484,8 @@ export class Client {
     }, timeoutMs);
     timer.unref?.();
     const onAbort = () => controller.abort();
+    // An "abort" event never fires again for a signal that is already aborted.
+    if (signal?.aborted) controller.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const response = await this.#fetch(url, {
@@ -487,7 +497,7 @@ export class Client {
       const responseHeaders = headerRecord(response.headers);
       const text = await response.text();
       if (!response.ok) {
-        throw new ApiError(response.status, lenientBody(text), responseHeaders, endpoint);
+        throw ApiError.from(response.status, lenientBody(text), responseHeaders, endpoint);
       }
       return { text, status: response.status, headers: responseHeaders };
     } catch (e) {

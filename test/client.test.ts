@@ -11,19 +11,28 @@ import type { Json } from "../src/json.js";
 import { compact, pretty } from "../src/json.js";
 import {
   ApiError,
+  AuthenticationError,
+  BadRequestError,
   Client,
   ConfigError,
   ConnectionError,
+  InternalServerError,
   InvalidRequestError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
   ReplayMissError,
   ResponseValidationError,
   TimeoutError,
+  TypeSafeError,
+  UnprocessableEntityError,
   backoffMs,
   cassetteKey,
   choice,
   defaultRetryPolicy,
   extractMessage,
   isRetryable,
+  isTypeSafeError,
   noul,
   parseRetryAfter,
   questionsToJson,
@@ -134,6 +143,23 @@ describe("configuration", () => {
     const headers = calls[0]?.init.headers as Record<string, string>;
     expect(headers["cf-aig-authorization"]).toBe("Bearer gw-key");
     expect(headers["authorization"]).toBe("Bearer sk-test");
+  });
+
+  it("reads the environment from the env option instead of process.env", () => {
+    const saved = process.env["TYPESAFE_REPLAY"];
+    process.env["TYPESAFE_REPLAY"] = "/nonexistent/cassettes";
+    try {
+      expect(Client.fromEnv().replayDir).toBe("/nonexistent/cassettes");
+      expect(new Client({ env: {}, apiKey: "k" }).replayDir).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env["TYPESAFE_REPLAY"];
+      else process.env["TYPESAFE_REPLAY"] = saved;
+    }
+    expect(() => new Client({ env: { TYPESAFE_API_KEY: "k" } })).not.toThrow();
+    expect(() => new Client({ env: {} })).toThrow(/No API key/);
+    expect(
+      new Client({ env: { TYPESAFE_API_KEY: "k", TYPESAFE_DEFAULT_MODEL: "jev-2" } }).defaultModel,
+    ).toBe("jev-2");
   });
 
   it("defaults the model and trims the base URL", async () => {
@@ -285,6 +311,80 @@ describe("responses", () => {
 });
 
 describe("errors and retries", () => {
+  it("names every error class, subclasses included", () => {
+    const cases: Array<[TypeSafeError, string]> = [
+      [new TypeSafeError("x"), "TypeSafeError"],
+      [new ConfigError("x"), "ConfigError"],
+      [new InvalidRequestError("x"), "InvalidRequestError"],
+      [new ApiError(418, undefined, {}), "ApiError"],
+      [new RateLimitError(429, undefined, {}), "RateLimitError"],
+      [new ConnectionError(new Error("reset")), "ConnectionError"],
+      [new TimeoutError(1000), "TimeoutError"],
+      [new ResponseValidationError(200, "a", "missing", undefined, {}), "ResponseValidationError"],
+      [new ReplayMissError("k", "/p"), "ReplayMissError"],
+    ];
+    for (const [error, name] of cases) {
+      expect(error.name).toBe(name);
+      expect(String(error)).toMatch(new RegExp(`^${name}: `));
+      expect(isTypeSafeError(error)).toBe(true);
+    }
+  });
+
+  it("maps each status to its ApiError subclass", () => {
+    const cases: Array<[number, typeof ApiError, string]> = [
+      [400, BadRequestError, "BadRequestError"],
+      [401, AuthenticationError, "AuthenticationError"],
+      [403, PermissionDeniedError, "PermissionDeniedError"],
+      [404, NotFoundError, "NotFoundError"],
+      [422, UnprocessableEntityError, "UnprocessableEntityError"],
+      [429, RateLimitError, "RateLimitError"],
+      [500, InternalServerError, "InternalServerError"],
+      [503, InternalServerError, "InternalServerError"],
+      [418, ApiError, "ApiError"],
+    ];
+    for (const [status, cls, name] of cases) {
+      const error = ApiError.from(status, { error: "nope" }, {}, "POST https://x.test/v1");
+      expect(error).toBeInstanceOf(cls);
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toBeInstanceOf(TypeSafeError);
+      expect(error.name).toBe(name);
+      expect(error.httpStatus).toBe(status);
+      expect(error.message).toBe(`POST https://x.test/v1: ${status} nope`);
+    }
+    expect(ApiError.from(429, undefined, {}).kind).toBe("RateLimit");
+  });
+
+  it("throws the status's subclass from a call", async () => {
+    const { fetch } = stubFetch([json({ error: "slow down" }, { status: 429 })]);
+    const error = await client(fetch, { retry: { maxRetries: 0 } })
+      .systemOne("x", { a: noul("y") })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).kind).toBe("RateLimit");
+  });
+
+  it("recognises its errors across realms, and nothing else", () => {
+    const foreign = Object.defineProperty(new Error("x"), Symbol.for("typesafe.error"), {
+      value: true,
+    });
+    expect(isTypeSafeError(foreign)).toBe(true);
+    for (const other of [new Error("x"), "x", null, undefined, { name: "ApiError" }]) {
+      expect(isTypeSafeError(other)).toBe(false);
+    }
+    const own = new ConfigError("x");
+    expect(Object.prototype.propertyIsEnumerable.call(own, Symbol.for("typesafe.error"))).toBe(
+      false,
+    );
+  });
+
+  it("passes a connection failure through as the standard cause", () => {
+    const cause = new Error("ECONNRESET");
+    const error = new ConnectionError(cause);
+    expect(error.cause).toBe(cause);
+    expect(error.message).toBe("Connection error: ECONNRESET");
+  });
+
   it("raises an ApiError with the message from the body", async () => {
     const { fetch } = stubFetch([
       json(
@@ -378,6 +478,31 @@ describe("errors and retries", () => {
     await expect(
       client(fetch, { timeoutMs: 5, retry: { maxRetries: 0 } }).systemOne("x", { a: noul("y") }),
     ).rejects.toBeInstanceOf(TimeoutError);
+  });
+
+  it("does not send when the signal is already aborted", async () => {
+    let sent = false;
+    const fetch = ((_url: string, init: RequestInit) => {
+      sent = !init.signal?.aborted;
+      return Promise.reject(new Error("aborted"));
+    }) as unknown as typeof globalThis.fetch;
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      client(fetch).systemOne("x", { a: noul("y") }, { signal: ac.signal }),
+    ).rejects.toThrow();
+    expect(sent).toBe(false);
+  });
+
+  it("ends a retry wait when the signal aborts", async () => {
+    const { fetch, calls } = stubFetch([new Response("{}", { status: 503 }), json({})]);
+    const ac = new AbortController();
+    const pending = client(fetch, {
+      retry: { backoffInitialMs: 20_000, backoffMaxMs: 20_000, backoffJitter: 0 },
+    }).systemOne("x", { a: noul("y") }, { signal: ac.signal });
+    setTimeout(() => ac.abort(new Error("stop")), 10);
+    await expect(pending).rejects.toThrow("stop");
+    expect(calls.length).toBe(1);
   });
 
   it("computes backoff the way the other SDKs do", () => {

@@ -510,6 +510,12 @@ function finishQuestion(b: Block, out: ParsedSketch): void {
       problem(i, "an option needs a label before the `=`");
       continue;
     }
+    if (options.some(([seen]) => seen === label)) {
+      bad = true;
+      out.tags[i] = "stray";
+      problem(i, `option \`${label}\` is listed twice`);
+      continue;
+    }
     options.push([label, desc === "" ? null : value(desc)]);
   }
   if (bad) return;
