@@ -3,7 +3,8 @@
 import type { Json, JsonObject } from "../json.js";
 import { isObject } from "../json.js";
 import { REQUEST_ID_HEADER } from "./constants.js";
-import type { Headers } from "./errors.js";
+import type { ResponseHeaders } from "./errors.js";
+import type { Question, Questions } from "./questions.js";
 
 /** A yes/no answer. */
 export interface NoulAnswer {
@@ -83,13 +84,48 @@ export interface ResponseMeta {
   /** HTTP status. */
   readonly status: number;
   /** Response headers, lowercased. */
-  readonly headers: Headers;
+  readonly headers: ResponseHeaders;
   /** Number of attempts made, including the successful one. */
   readonly attempts: number;
 }
 
-/** The result of a System One call. */
-export interface SystemOneResponse {
+/**
+ * The names in `Q` whose question is of kind `K`, or a raw question (which may declare any type).
+ * When `Q`'s names are not known to the compiler — the wide {@link Questions}, or questions built at
+ * run time — any `string`.
+ */
+export type QuestionName<Q extends Questions, K extends Question["kind"]> =
+  Q extends ReadonlyArray<readonly [string, Question]>
+    ? string extends Q[number][0]
+      ? string
+      : Extract<Q[number], readonly [string, { readonly kind: K | "raw" }]>[0]
+    : string extends keyof Q
+      ? string
+      : {
+          [N in keyof Q]: Q[N] extends { readonly kind: K | "raw" } ? N : never;
+        }[keyof Q] &
+          string;
+
+/** The names each typed lookup of a {@link SystemOneResponse} accepts. */
+export interface AnswerNames {
+  readonly noul: string;
+  readonly choice: string;
+  readonly score: string;
+}
+
+/** The {@link AnswerNames} of a set of questions: each lookup takes the names of its own kind. */
+export interface AnswerNamesOf<Q extends Questions> extends AnswerNames {
+  readonly noul: QuestionName<Q, "noul">;
+  readonly choice: QuestionName<Q, "choice">;
+  readonly score: QuestionName<Q, "score">;
+}
+
+/**
+ * The result of a System One call. `N` names what each typed lookup accepts: for a call whose
+ * questions' names are known, `noul`, `choice` and `score` only take the names of questions of
+ * that kind; otherwise any string.
+ */
+export interface SystemOneResponse<N extends AnswerNames = AnswerNames> {
   /** The model that answered. */
   readonly model: string;
   /** Token usage. */
@@ -106,18 +142,19 @@ export interface SystemOneResponse {
   /** The `x-typesafe-request-id` header. */
   readonly requestId?: string;
   /** The answer to `name`, if it is a noul. */
-  noul(name: string): NoulAnswer | undefined;
+  noul(name: N["noul"]): NoulAnswer | undefined;
   /** The answer to `name`, if it is a choice. */
-  choice(name: string): ChoiceAnswer | undefined;
+  choice(name: N["choice"]): ChoiceAnswer | undefined;
   /** The answer to `name`, if it is a score. */
-  score(name: string): ScoreAnswer | undefined;
+  score(name: N["score"]): ScoreAnswer | undefined;
 }
 
 /** One available model. */
 export interface ModelMetadata {
   readonly name: string;
   readonly description: string;
-  readonly release_date: string;
+  /** When the model was released, as the API reports it (`release_date` on the wire). */
+  readonly releaseDate: string;
 }
 
 /** The models available to the account. */
@@ -228,13 +265,13 @@ function decodeAnswer(value: Json, prefix: string): Answer | undefined {
 }
 
 /** Build the response object the client hands back, with its typed lookups. */
-export function makeSystemOneResponse(
+export function makeSystemOneResponse<N extends AnswerNames = AnswerNames>(
   model: string,
   usage: Usage,
   answers: Map<string, Answer>,
   raw: Json,
   meta: ResponseMeta,
-): SystemOneResponse {
+): SystemOneResponse<N> {
   const typed = <T extends Answer>(name: string, type: Answer["type"]): T | undefined => {
     const answer = answers.get(name);
     return answer?.type === type ? (answer as T) : undefined;
@@ -246,9 +283,9 @@ export function makeSystemOneResponse(
     raw,
     meta,
     requestId: meta.headers[REQUEST_ID_HEADER],
-    noul: (name) => typed<NoulAnswer>(name, "noul"),
-    choice: (name) => typed<ChoiceAnswer>(name, "choice"),
-    score: (name) => typed<ScoreAnswer>(name, "score"),
+    noul: (name: string) => typed<NoulAnswer>(name, "noul"),
+    choice: (name: string) => typed<ChoiceAnswer>(name, "choice"),
+    score: (name: string) => typed<ScoreAnswer>(name, "score"),
   };
 }
 
@@ -301,7 +338,7 @@ export function decodeModels(text: string): { models: ModelMetadata[]; raw: Json
     return {
       name: requireString(m["name"], at(prefix, "name")),
       description: requireString(m["description"], at(prefix, "description")),
-      release_date: requireString(m["release_date"], at(prefix, "release_date")),
+      releaseDate: requireString(m["release_date"], at(prefix, "release_date")),
     };
   });
   return { models, raw: body };

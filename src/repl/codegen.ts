@@ -74,8 +74,8 @@ export function typescript(session: Session, model: string, threshold: number): 
   lines.push("});");
   lines.push("");
   lines.push("const { answers } = await client.ask(");
-  lines.push("  questions,");
   lines.push(`  ${literal(session.state)},`);
+  lines.push("  questions,");
   lines.push(`  { model: ${JSON.stringify(model)} },`);
   lines.push(");");
   lines.push("");

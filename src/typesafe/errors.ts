@@ -17,7 +17,7 @@ import {
 } from "./constants.js";
 
 /** Response headers, lowercased. */
-export type Headers = Record<string, string>;
+export type ResponseHeaders = Record<string, string>;
 
 /**
  * Marks every {@link TypeSafeError}. A registered symbol, so {@link isTypeSafeError} recognises an
@@ -123,11 +123,11 @@ export class ApiError extends TypeSafeError {
   /** The JSON error body, the raw text as a string when it is not JSON, or `undefined` when empty. */
   readonly body: Json | undefined;
   /** Response headers. */
-  readonly headers: Headers;
+  readonly headers: ResponseHeaders;
   /** `"METHOD url"` without credentials, query or fragment. */
   readonly endpoint: string | undefined;
 
-  constructor(status: number, body: Json | undefined, headers: Headers, endpoint?: string) {
+  constructor(status: number, body: Json | undefined, headers: ResponseHeaders, endpoint?: string) {
     const extracted = body === undefined ? undefined : extractMessage(body);
     const detail =
       extracted ??
@@ -165,7 +165,7 @@ export class ApiError extends TypeSafeError {
   static from(
     status: number,
     body: Json | undefined,
-    headers: Headers,
+    headers: ResponseHeaders,
     endpoint?: string,
   ): ApiError {
     switch (apiErrorKind(status)) {
@@ -237,16 +237,50 @@ export class ConnectionError extends TypeSafeError {
   }
 }
 
-/** The request exceeded its configured timeout. */
+/**
+ * The request exceeded its configured timeout, or the caller's signal timed out
+ * (`AbortSignal.timeout(ms)`), in which case `cause` is the signal's reason.
+ */
 export class TimeoutError extends TypeSafeError {
   override readonly name: string = "TimeoutError";
-  /** The per-attempt timeout that elapsed, in milliseconds. */
-  readonly timeoutMs: number;
+  /**
+   * The per-attempt timeout that elapsed, in milliseconds; `undefined` when it was the caller's
+   * signal that timed out.
+   */
+  readonly timeoutMs: number | undefined;
 
-  constructor(timeoutMs: number) {
-    super(`Request timed out (timeout=${timeoutMs / 1000}s).`);
+  constructor(timeoutMs: number | undefined, options?: ErrorOptions) {
+    super(
+      timeoutMs === undefined
+        ? "Request timed out (the caller's signal timed out)."
+        : `Request timed out (timeout=${timeoutMs / 1000}s).`,
+      options,
+    );
     this.timeoutMs = timeoutMs;
   }
+}
+
+/**
+ * The caller's `signal` aborted the call: before it was sent, while it was in flight, or while it
+ * waited to retry. `cause` is the signal's reason. A signal that timed out
+ * (`AbortSignal.timeout(ms)`) is a {@link TimeoutError} instead.
+ */
+export class UserAbortError extends TypeSafeError {
+  override readonly name: string = "UserAbortError";
+
+  constructor(reason: unknown) {
+    super("Request aborted by the caller.", { cause: reason });
+  }
+}
+
+/** The error for an aborted `signal`: a {@link TimeoutError} when it timed out, else a {@link UserAbortError}. */
+export function abortError(signal: AbortSignal): TimeoutError | UserAbortError {
+  const reason: unknown = signal.reason;
+  const timedOut =
+    typeof DOMException !== "undefined" &&
+    reason instanceof DOMException &&
+    reason.name === "TimeoutError";
+  return timedOut ? new TimeoutError(undefined, { cause: reason }) : new UserAbortError(reason);
 }
 
 /** A successful response whose body is missing or has structurally invalid required data. */
@@ -261,7 +295,7 @@ export class ResponseValidationError extends TypeSafeError {
   /** The decoded body (or raw text), if any. */
   readonly body: Json | undefined;
   /** Response headers. */
-  readonly headers: Headers;
+  readonly headers: ResponseHeaders;
   /** `"METHOD url"` without credentials, query or fragment. */
   readonly endpoint: string | undefined;
 
@@ -270,7 +304,7 @@ export class ResponseValidationError extends TypeSafeError {
     fieldPath: string,
     detail: string,
     body: Json | undefined,
-    headers: Headers,
+    headers: ResponseHeaders,
     endpoint?: string,
   ) {
     const id = headers[REQUEST_ID_HEADER];
@@ -347,7 +381,7 @@ export function extractMessage(body: Json): string | undefined {
 }
 
 /** Parse `retry-after-ms` (milliseconds) then `Retry-After` (seconds or HTTP date). */
-export function parseRetryAfter(headers: Headers): number | undefined {
+export function parseRetryAfter(headers: ResponseHeaders): number | undefined {
   const ms = headers[RETRY_AFTER_MS_HEADER];
   if (ms !== undefined) {
     const raw = ms.trim();

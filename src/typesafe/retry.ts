@@ -52,15 +52,17 @@ export function noRetries(): RetryPolicy {
   return { ...defaultRetryPolicy(), maxRetries: 0 };
 }
 
+/** Reject a policy no request could run under, naming the option at fault. */
 export function validateRetryPolicy(policy: RetryPolicy): void {
   if (!(policy.backoffJitter >= 0 && policy.backoffJitter <= 1)) {
-    throw new ConfigError("backoff_jitter must be between zero and one.");
+    throw new ConfigError("retry.backoffJitter must be between zero and one.");
   }
   if (policy.budgetMs !== null && policy.budgetMs <= 0) {
-    throw new ConfigError("retry budget must be a positive duration.");
+    throw new ConfigError("retry.budgetMs must be a positive duration.");
   }
 }
 
+/** Whether `policy` retries `error`: a built-in rule, or the policy's own predicate. */
 export function isRetryable(policy: RetryPolicy, error: TypeSafeError): boolean {
   let builtin = false;
   if (error instanceof TimeoutError) builtin = policy.retryTimeouts;
@@ -100,6 +102,7 @@ export function shouldStop(
   return policy.budgetMs !== null && elapsedMs + upcomingMs >= policy.budgetMs;
 }
 
+/** Exponential backoff with subtractive jitter; `r` is the random draw in `[0, 1)`. */
 export function backoffMs(
   attempt: number,
   initialMs: number,

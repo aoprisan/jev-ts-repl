@@ -41,6 +41,9 @@
     },
     "./package.json": "./package.json"
   },
+  "sideEffects": [
+    "./dist/cli.js"
+  ],
   "files": [
     "dist",
     "README.md",

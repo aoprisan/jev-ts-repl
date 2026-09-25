@@ -1,7 +1,7 @@
 /** Layout: a status strip, the transcript, a live view of the session, and the input line. */
 
 import { questionToJson } from "../typesafe/questions.js";
-import type { Buffer } from "../tui/buffer.js";
+import type { ScreenBuffer } from "../tui/buffer.js";
 import type { Rect } from "../tui/layout.js";
 import { centered, horizontal, length, min, percentage, vertical } from "../tui/layout.js";
 import type { Line, Span, Style } from "../tui/style.js";
@@ -41,7 +41,7 @@ function padEnd(text: string, width: number): string {
   return len >= width ? text : text + " ".repeat(width - len);
 }
 
-export function render(buffer: Buffer, app: App): Cursor | undefined {
+export function render(buffer: ScreenBuffer, app: App): Cursor | undefined {
   if (app.sketch) return sketchView(buffer, buffer.area, app);
 
   const [top, body, input] = vertical(buffer.area, [length(1), min(3), length(3)]);
@@ -55,7 +55,7 @@ export function render(buffer: Buffer, app: App): Cursor | undefined {
   return cursor;
 }
 
-function status(buffer: Buffer, area: Rect, app: App): void {
+function status(buffer: ScreenBuffer, area: Rect, app: App): void {
   const spans: Span[] = [
     span(" jev ", { fg: ACCENT, bold: true }),
     dim("│ "),
@@ -69,7 +69,7 @@ function status(buffer: Buffer, area: Rect, app: App): void {
   buffer.paragraph(area, [line(spans)]);
 }
 
-function transcript(buffer: Buffer, area: Rect, app: App): void {
+function transcript(buffer: ScreenBuffer, area: Rect, app: App): void {
   const inner = buffer.block(area, {
     borderStyle: { fg: DIM },
     title: line([dim(" transcript ")]),
@@ -95,7 +95,7 @@ function transcript(buffer: Buffer, area: Rect, app: App): void {
   }
 }
 
-function panel(buffer: Buffer, area: Rect, app: App): void {
+function panel(buffer: ScreenBuffer, area: Rect, app: App): void {
   const inner = buffer.block(area, {
     borderStyle: { fg: DIM },
     title: line([dim(" session ")]),
@@ -162,7 +162,7 @@ function panel(buffer: Buffer, area: Rect, app: App): void {
   buffer.paragraph(inner, lines);
 }
 
-function prompt(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
+function prompt(buffer: ScreenBuffer, area: Rect, app: App): Cursor | undefined {
   const title = app.pending
     ? line([
         span(` ${SPINNER[app.spinner % SPINNER.length] ?? ""} `, { fg: ACCENT }),
@@ -192,7 +192,7 @@ function prompt(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
 }
 
 /** The builder-mode popup: a form on the left, the JSON it produces on the right. */
-function builderView(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
+function builderView(buffer: ScreenBuffer, area: Rect, app: App): Cursor | undefined {
   const b = app.builder;
   if (!b) return undefined;
   const popup = centered(area, 92, 86);
@@ -318,7 +318,7 @@ const GUTTER = 8;
  * Sketch mode: the page on the left with a gutter saying what each line became, a preview on the
  * right, and a status line that explains whatever the cursor is on.
  */
-function sketchView(buffer: Buffer, area: Rect, app: App): Cursor | undefined {
+function sketchView(buffer: ScreenBuffer, area: Rect, app: App): Cursor | undefined {
   const ed = app.sketch;
   if (!ed) return undefined;
   const threshold = app.threshold;

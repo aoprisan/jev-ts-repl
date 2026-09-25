@@ -334,6 +334,7 @@ import { Client, choice, noul, score } from "jev-repl";
 
 const client = Client.fromEnv(); // TYPESAFE_API_KEY
 
+// The state is a string or anything JSON-serialisable; the questions come second.
 const res = await client.systemOne(
   "Hi, I've been trying to connect my Stripe account for 3 days. I'm losing sales. Please help ASAP.",
   {
@@ -354,14 +355,21 @@ if (department && department.confidence >= 0.6) {
 console.log(res.noul("is_urgent")?.noul); // a probability, not a boolean — you pick the threshold
 ```
 
+When the questions are written out like this, `res.noul`, `res.choice` and `res.score` only accept
+the names of questions of their own kind: `res.noul("department")` does not compile. Questions built
+at run time are typed `Questions`, and their lookups take any string.
+
+`client.models.list()` lists the models the key can use.
+
 A noul answers with a probability, so the threshold is a product decision, not the model's:
 `answer.noul >= 0.8` is a different call from `>= 0.5`. Choice and score answers carry a
 `confidence` over the distribution — gate automation on it and route the rest to a human.
 
 Errors mirror the other TypeSafe SDKs: `ConfigError` and `InvalidRequestError` are thrown before
-anything is sent, `ApiError` covers a non-2xx response, `ConnectionError` and `TimeoutError` cover
-requests that never produced one, and `ResponseValidationError` covers a 2xx body missing required
-data (with `fieldPath` pointing at it). Retries are on by default: 2 retries, exponential backoff
+anything is sent (a state that is not JSON-serialisable is an `InvalidRequestError`), `ApiError`
+covers a non-2xx response, `ConnectionError` and `TimeoutError` cover requests that never produced
+one, `UserAbortError` covers a call you cancelled, and `ResponseValidationError` covers a 2xx body
+missing required data (with `fieldPath` pointing at it). Retries are on by default: 2 retries, exponential backoff
 with jitter, a 30 s budget, and `Retry-After` is honoured.
 
 ```ts
@@ -371,6 +379,11 @@ const client = new Client({
   retry: { maxRetries: 4, budgetMs: 60_000 },
 });
 ```
+
+`new Client(options)` uses its options and nothing else. `Client.fromEnv(options)` fills whatever
+the options leave unset from `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL`, `TYPESAFE_DEFAULT_MODEL`,
+`TYPESAFE_RECORD` and `TYPESAFE_REPLAY`; pass it `env` to read those from a record of your own
+instead of `process.env`, e.g. a tenant's settings on a shared server.
 
 `ApiError` has a subclass per status — `BadRequestError`, `AuthenticationError`,
 `PermissionDeniedError`, `NotFoundError`, `UnprocessableEntityError`, `RateLimitError` and
@@ -397,7 +410,8 @@ try {
 ```
 
 Every call takes a `signal` to cancel it from outside, retry waits included. An aborted call
-rejects with the abort error, not a `TypeSafeError`:
+rejects with a `UserAbortError` whose `cause` is the signal's reason — or a `TimeoutError` when the
+signal came from `AbortSignal.timeout(ms)`:
 
 ```ts
 const controller = new AbortController();
@@ -407,9 +421,6 @@ controller.abort(); // e.g. the user navigated away
 // Or give the whole call, retries and all, a deadline:
 await client.systemOne(text, questions, { signal: AbortSignal.timeout(15_000) });
 ```
-
-Pass `env` to read configuration from a record of your own instead of `process.env` —
-`new Client({ env: {}, apiKey })` ignores the environment entirely.
 
 ### Typed answers
 
@@ -428,7 +439,7 @@ const triage = rubric({
   frustration: score("How frustrated", ["Calm", "Frustrated", "Very angry"]),
 });
 
-const { answers, response } = await Client.fromEnv().ask(triage, "The payout failed again.");
+const { answers, response } = await Client.fromEnv().ask("The payout failed again.", triage);
 answers.is_urgent.noul; // number
 answers.department.choice; // "billing" | "technical"
 answers.department.probabilities.billing; // number
@@ -455,7 +466,7 @@ TYPESAFE_RECORD=test/cassettes npm test   # once, live, with a key
 TYPESAFE_REPLAY=test/cassettes npm test   # every time after: offline, free, the same answers
 ```
 
-The same thing as options, which win over the environment:
+The variables are read by `Client.fromEnv()`. The same thing as options, which win over them:
 
 ```ts
 const client = new Client({ replay: "test/cassettes" }); // or { record: "test/cassettes" }
@@ -466,7 +477,7 @@ order, plus anything `extraBody` adds — so a different state, model or questio
 file. A request with no recording throws `ReplayMissError`, carrying the `key` and the `path` it
 looked for; a replay never falls back to the network or to simulated answers, because a test that
 quietly goes live is not the test you wrote. Setting both is a `ConfigError`, and so is
-`models().list()` on a replaying client. `cassetteKey(body)` is exported, for anything that wants
+`models.list()` on a replaying client. `cassetteKey(body)` is exported, for anything that wants
 to name a file the same way.
 
 A cassette directory is a `jev eval --cache` directory: same key, same file. Replay the cache of an
@@ -474,7 +485,7 @@ eval run, or point `--cache` at what a test recorded. Record and replay read and
 they work in Node, not the browser.
 
 The REPL's own pieces are exported too (`App`, `Session`, `sketch`, `codegen`, `mock`, the terminal
-buffer), so a session can be driven, rendered or snapshot-tested without a terminal.
+`ScreenBuffer`), so a session can be driven, rendered or snapshot-tested without a terminal.
 
 `jev-repl/core` is the same thing minus the terminal — no `node:` imports, no `process`, no stdin —
 so it also runs in a browser or a worker:

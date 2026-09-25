@@ -203,7 +203,7 @@ const triage = rubric({
 });
 
 const client = Client.fromEnv(); // TYPESAFE_API_KEY
-const { answers } = await client.ask(triage, "The payout failed again.");
+const { answers } = await client.ask("The payout failed again.", triage);
 answers.is_urgent.noul; // a probability
 answers.department.choice; // "billing" | "technical"
 ```

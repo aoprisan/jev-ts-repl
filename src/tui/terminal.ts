@@ -1,6 +1,6 @@
 /** Raw mode, the alternate screen, and pushing a rendered buffer at the terminal. */
 
-import { Buffer } from "./buffer.js";
+import { ScreenBuffer } from "./buffer.js";
 import type { KeyEvent } from "./keys.js";
 import { KeyDecoder } from "./keys.js";
 
@@ -56,8 +56,8 @@ export class Terminal {
   }
 
   /** A buffer the size of the terminal, ready to draw into. */
-  frame(): Buffer {
-    return new Buffer(this.width, this.height);
+  frame(): ScreenBuffer {
+    return new ScreenBuffer(this.width, this.height);
   }
 
   start(onKey: (event: KeyEvent) => void, onResize?: () => void): void {
@@ -86,7 +86,7 @@ export class Terminal {
   }
 
   /** Draw a frame, optionally leaving the cursor somewhere visible. */
-  draw(buffer: Buffer, cursor?: CursorPosition): void {
+  draw(buffer: ScreenBuffer, cursor?: CursorPosition): void {
     const body = buffer.toAnsi();
     // Terminals flicker when a frame is repainted for nothing.
     const cursorPart = cursor

@@ -5,6 +5,36 @@ pre-1.0, so a minor bump may still move the surface under you.
 
 ## Unreleased
 
+### Breaking
+
+- **`Buffer` is `ScreenBuffer`, and `Headers` is `ResponseHeaders`**, so neither shadows a global.
+  Migrate: rename the import.
+- **`ModelMetadata.release_date` is `releaseDate`.** Migrate: read `model.releaseDate`.
+- **Errors name options, not wire fields:** `baseUrl`, `timeoutMs`, `retry.backoffJitter`,
+  `retry.budgetMs` (were `base_url`, `timeout`, `backoff_jitter`, `retry budget`). Migrate: update
+  any code that matches on those messages.
+- **`new Client(options)` no longer reads the environment;** only `Client.fromEnv(options)` does,
+  and the `env` option moved to it (`FromEnvOptions`). Migrate: replace `new Client({ ... })` that
+  relied on `TYPESAFE_*` variables with `Client.fromEnv({ ... })`.
+- **`client.models()` is `client.models`.** Migrate: `client.models().list()` →
+  `client.models.list()`.
+- **`client.ask(state, rubric, options)`**, state first, as `systemOne` and the Rust and Scala SDKs
+  take it. Migrate: swap the first two arguments. `systemOne` is generic over its questions, so
+  `res.noul(name)` and its siblings reject a name of the wrong kind when the questions are written
+  out. Migrate: fix the lookup the compiler names, or type the questions `Questions`.
+- **The package exports its API by name.** Decoders, retry arithmetic, wire paths and header names
+  (`makeSystemOneResponse`, `decodeSystemOne`, `lenientBody`, `validateRetryPolicy`, `isRetryable`,
+  `shouldStop`, `backoffMs`, `sleep`, `SYSTEM_ONE_PATH`, `DecodeFailure`, …) are no longer exported.
+  Migrate: nothing a client call needs went away; copy a helper you relied on.
+- **Aborting a call throws `UserAbortError`** (a `TypeSafeError`, the signal's reason as `cause`),
+  or `TimeoutError` for an `AbortSignal.timeout(ms)` signal, instead of the bare abort reason.
+  Migrate: catch `UserAbortError` where you caught the reason; `TimeoutError.timeoutMs` may be
+  `undefined`.
+- **`state` is `unknown`**, so an interface-typed object is accepted; a state or body that is not
+  JSON-serialisable is an `InvalidRequestError` (a body used to be a plain `TypeSafeError`).
+  Migrate: nothing, unless you caught that `TypeSafeError`.
+- **`"sideEffects": ["./dist/cli.js"]`** lets bundlers drop unused modules. Migrate: nothing.
+
 ### Added
 
 - **An error class per status.** A failed call throws `BadRequestError`, `AuthenticationError`,
@@ -13,8 +43,8 @@ pre-1.0, so a minor bump may still move the surface under you.
   `ApiError.from(status, …)` picks one. `kind` is unchanged.
 - **`isTypeSafeError(e)`** recognises an SDK error from another copy of the package or another
   realm, where `instanceof` does not.
-- **`env` option.** `new Client({ env: {} })` ignores the environment, so a stray
-  `TYPESAFE_REPLAY` or `TYPESAFE_API_KEY` cannot reach a client you configure by hand.
+- **`env` option on `Client.fromEnv`.** `Client.fromEnv({ env })` reads the `TYPESAFE_*`
+  variables from a record of your own instead of `process.env`.
 - A `default` export condition, for tools that do not match `import`.
 
 ### Changed

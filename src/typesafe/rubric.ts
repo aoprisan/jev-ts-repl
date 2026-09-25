@@ -10,7 +10,7 @@
  *   }),
  *   frustration: score("How frustrated", ["Calm", "Annoyed", "Furious"]),
  * });
- * const { answers } = await client.ask(triage, "The payout failed again.");
+ * const { answers } = await client.ask("The payout failed again.", triage);
  * answers.is_urgent.noul; // number
  * answers.department.choice; // "billing" | "technical"
  * answers.frustration.score; // number
@@ -28,6 +28,7 @@ import type { ChoiceQuestion, NoulQuestion, Question, ScoreQuestion } from "./qu
 import { questionType } from "./questions.js";
 import type {
   Answer,
+  AnswerNamesOf,
   ChoiceAnswer,
   NoulAnswer,
   ScoreAnswer,
@@ -75,7 +76,7 @@ export interface Rubric<R extends RubricQuestions> {
 /** What {@link Client.ask} hands back: the typed answers, and the response they came from. */
 export interface RubricResponse<R extends RubricQuestions> {
   readonly answers: RubricAnswers<R>;
-  readonly response: SystemOneResponse;
+  readonly response: SystemOneResponse<AnswerNamesOf<R>>;
 }
 
 /** A rubric over `questions`; pass it to `client.ask`, or `decode` a response you already have. */
