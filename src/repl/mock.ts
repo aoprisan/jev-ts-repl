@@ -69,9 +69,9 @@ export function models(): ModelMetadata[] {
     {
       name: "jev-latest",
       description: "Alias for the newest jev release",
-      release_date: "2026-05-01",
+      releaseDate: "2026-05-01",
     },
-    { name: "jev-2", description: "Previous generation", release_date: "2025-11-12" },
+    { name: "jev-2", description: "Previous generation", releaseDate: "2025-11-12" },
   ];
 }
 

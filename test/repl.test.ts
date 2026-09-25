@@ -18,7 +18,7 @@ import { fromBody, parseChoice, parseNoul, parseScore, parseTurn } from "../src/
 import { parse as parsePage, render as sketchRender } from "../src/repl/sketch.js";
 import { render } from "../src/repl/ui.js";
 import * as wrap from "../src/repl/wrap.js";
-import { Buffer } from "../src/tui/buffer.js";
+import { ScreenBuffer } from "../src/tui/buffer.js";
 import { char, ctrl, key } from "../src/tui/keys.js";
 import { line, linesText } from "../src/tui/style.js";
 import type { Json } from "../src/json.js";
@@ -39,7 +39,7 @@ function transcript(a: App): string {
 }
 
 function screen(a: App, width: number, height: number): string {
-  const buffer = new Buffer(width, height);
+  const buffer = new ScreenBuffer(width, height);
   render(buffer, a);
   return buffer.toString();
 }

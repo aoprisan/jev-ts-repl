@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type { Json } from "../src/json.js";
 import { compact, pretty } from "../src/json.js";
@@ -26,21 +26,25 @@ import {
   TimeoutError,
   TypeSafeError,
   UnprocessableEntityError,
-  backoffMs,
+  UserAbortError,
+  type Question,
+  type Questions,
+  type SystemOneResponse,
   cassetteKey,
   choice,
   defaultRetryPolicy,
-  extractMessage,
-  isRetryable,
   isTypeSafeError,
   noul,
-  parseRetryAfter,
   questionsToJson,
   raw,
   score,
-  shouldStop,
-  validateQuestions,
 } from "../src/index.js";
+import * as core from "../src/core.js";
+import * as root from "../src/index.js";
+import { extractMessage, parseRetryAfter } from "../src/typesafe/errors.js";
+import { validateQuestions } from "../src/typesafe/questions.js";
+import { backoffMs, isRetryable, shouldStop } from "../src/typesafe/retry.js";
+import * as sdk from "../src/typesafe/index.js";
 
 interface Call {
   url: string;
@@ -109,6 +113,7 @@ describe("configuration", () => {
     delete process.env["TYPESAFE_API_KEY"];
     try {
       expect(() => Client.fromEnv()).toThrow(ConfigError);
+      expect(() => new Client()).toThrow(/Pass apiKey, or use Client.fromEnv/);
     } finally {
       if (saved !== undefined) process.env["TYPESAFE_API_KEY"] = saved;
     }
@@ -145,21 +150,53 @@ describe("configuration", () => {
     expect(headers["authorization"]).toBe("Bearer sk-test");
   });
 
-  it("reads the environment from the env option instead of process.env", () => {
-    const saved = process.env["TYPESAFE_REPLAY"];
-    process.env["TYPESAFE_REPLAY"] = "/nonexistent/cassettes";
+  it("reads the environment in fromEnv only, from the env option when given", () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      TYPESAFE_API_KEY: "sk-env",
+      TYPESAFE_REPLAY: "/nonexistent/cassettes",
+      TYPESAFE_DEFAULT_MODEL: "jev-env",
+      TYPESAFE_BASE_URL: "not a url",
+    });
     try {
-      expect(Client.fromEnv().replayDir).toBe("/nonexistent/cassettes");
-      expect(new Client({ env: {}, apiKey: "k" }).replayDir).toBeUndefined();
+      // The constructor takes its arguments and nothing else.
+      const plain = new Client({ apiKey: "k" });
+      expect(plain.replayDir).toBeUndefined();
+      expect(plain.defaultModel).toBe("jev-latest");
+      expect(() => new Client({})).toThrow(/No API key/);
+      // fromEnv reads Node's environment, or the record it is handed instead.
+      expect(() => Client.fromEnv()).toThrow(/baseUrl "not a url" is not a valid URL/);
+      expect(Client.fromEnv({ baseUrl: "https://api.typesafe.ai" }).replayDir).toBe(
+        "/nonexistent/cassettes",
+      );
+      expect(Client.fromEnv({ env: {}, apiKey: "k" }).replayDir).toBeUndefined();
     } finally {
-      if (saved === undefined) delete process.env["TYPESAFE_REPLAY"];
-      else process.env["TYPESAFE_REPLAY"] = saved;
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
     }
-    expect(() => new Client({ env: { TYPESAFE_API_KEY: "k" } })).not.toThrow();
-    expect(() => new Client({ env: {} })).toThrow(/No API key/);
+    expect(() => Client.fromEnv({ env: { TYPESAFE_API_KEY: "k" } })).not.toThrow();
+    expect(() => Client.fromEnv({ env: {} })).toThrow(/No API key/);
     expect(
-      new Client({ env: { TYPESAFE_API_KEY: "k", TYPESAFE_DEFAULT_MODEL: "jev-2" } }).defaultModel,
+      Client.fromEnv({ env: { TYPESAFE_API_KEY: "k", TYPESAFE_DEFAULT_MODEL: "jev-2" } })
+        .defaultModel,
     ).toBe("jev-2");
+    expect(
+      Client.fromEnv({
+        model: "jev-3",
+        env: { TYPESAFE_API_KEY: "k", TYPESAFE_DEFAULT_MODEL: "x" },
+      }).defaultModel,
+    ).toBe("jev-3");
+  });
+
+  it("names options, not wire fields, in its errors", () => {
+    expect(() => new Client({ apiKey: "k", baseUrl: "ftp://x" })).toThrow(/^baseUrl must/);
+    expect(() => new Client({ apiKey: "k", retry: { backoffJitter: 2 } })).toThrow(
+      "retry.backoffJitter must be between zero and one.",
+    );
+    expect(() => new Client({ apiKey: "k", retry: { budgetMs: 0 } })).toThrow(/^retry\.budgetMs/);
+    expect(() => new Client({ apiKey: "k", timeoutMs: -1 })).toThrow(/^timeoutMs/);
   });
 
   it("defaults the model and trims the base URL", async () => {
@@ -237,6 +274,116 @@ describe("requests", () => {
     expect(() => validateQuestions({ r: raw({ type: "noul", future_field: 1 }) })).not.toThrow();
     expect(calls, "nothing reached the API").toHaveLength(0);
   });
+
+  it("takes any JSON-serialisable state, interfaces included", async () => {
+    interface Ticket {
+      subject: string;
+      tags: string[];
+      opened: Date;
+    }
+    const ticket: Ticket = { subject: "Payout", tags: ["billing"], opened: new Date(0) };
+    const { fetch, calls } = stubFetch([json(ANSWERS)]);
+    await client(fetch).systemOne(ticket, { a: noul("y") });
+    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, Json>;
+    expect(body["state"]).toEqual({
+      subject: "Payout",
+      tags: ["billing"],
+      opened: "1970-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("rejects a state that is not JSON before sending it", async () => {
+    const { fetch, calls } = stubFetch([json(ANSWERS)]);
+    const cyclic: Record<string, unknown> = {};
+    cyclic["self"] = cyclic;
+    for (const state of [1n, cyclic, undefined, () => 1]) {
+      await expect(client(fetch).systemOne(state, { a: noul("y") })).rejects.toBeInstanceOf(
+        InvalidRequestError,
+      );
+    }
+    expect(calls, "nothing reached the API").toHaveLength(0);
+  });
+});
+
+describe("the public surface", () => {
+  it("exports the same API from the package root, core and the SDK barrel", () => {
+    const names = Object.keys(sdk).sort();
+    for (const entry of [root, core]) {
+      const exported = new Set(Object.keys(entry));
+      expect(names.filter((name) => !exported.has(name))).toEqual([]);
+    }
+  });
+
+  it("keeps internals and shadowing names out of it", () => {
+    for (const internal of [
+      "makeSystemOneResponse",
+      "decodeSystemOne",
+      "decodeModels",
+      "DecodeFailure",
+      "lenientBody",
+      "extractMessage",
+      "parseRetryAfter",
+      "validateRetryPolicy",
+      "isRetryable",
+      "shouldStop",
+      "backoffMs",
+      "retryDelayMs",
+      "sleep",
+      "abortError",
+      "SYSTEM_ONE_PATH",
+      "MODELS_PATH",
+      "SDK_HEADER",
+      "REQUEST_ID_HEADER",
+      "SECRET_HEADERS",
+      "validateQuestions",
+      "readCassette",
+      "writeCassette",
+      "Buffer",
+    ]) {
+      expect(root, internal).not.toHaveProperty(internal);
+      expect(core, internal).not.toHaveProperty(internal);
+    }
+    expect(root).toHaveProperty("ScreenBuffer");
+  });
+});
+
+describe("typed lookups", () => {
+  it("only take the names of questions of their kind when the questions are known", async () => {
+    const { fetch } = stubFetch([json(ANSWERS)]);
+    const res = await client(fetch).systemOne("x", {
+      department: choice("d", { billing: null, technical: null }),
+      frustration: score("f", ["Calm", "Angry"]),
+      is_urgent: noul("u"),
+      shape: raw({ type: "noul" }),
+    });
+    expectTypeOf(res.noul).parameter(0).toEqualTypeOf<"is_urgent" | "shape">();
+    expectTypeOf(res.choice).parameter(0).toEqualTypeOf<"department" | "shape">();
+    expectTypeOf(res.score).parameter(0).toEqualTypeOf<"frustration" | "shape">();
+    // @ts-expect-error department is a choice, not a noul
+    res.noul("department");
+    // @ts-expect-error not a question at all
+    res.score("frustraton");
+
+    // Ordered pairs narrow the same way.
+    const paired = await client(stubFetch([json(ANSWERS)]).fetch).systemOne("x", [
+      ["is_urgent", noul("u")],
+      ["department", choice("d", { billing: null })],
+    ]);
+    expectTypeOf(paired.noul).parameter(0).toEqualTypeOf<"is_urgent">();
+    // @ts-expect-error is_urgent is a noul
+    paired.choice("is_urgent");
+
+    // Questions whose names the compiler cannot see still take any string.
+    const built: Questions = { is_urgent: noul("u") };
+    const wide = await client(stubFetch([json(ANSWERS)]).fetch).systemOne("x", built);
+    expectTypeOf(wide.noul).parameter(0).toEqualTypeOf<string>();
+    const entries: Array<[string, Question]> = [["is_urgent", noul("u")]];
+    const dynamic = await client(stubFetch([json(ANSWERS)]).fetch).systemOne("x", entries);
+    expectTypeOf(dynamic.choice).parameter(0).toEqualTypeOf<string>();
+
+    // A narrowly typed response still goes where any response is expected.
+    expectTypeOf(res).toMatchTypeOf<SystemOneResponse>();
+  });
 });
 
 describe("responses", () => {
@@ -244,7 +391,11 @@ describe("responses", () => {
     const { fetch } = stubFetch([
       json(ANSWERS, { headers: { "x-typesafe-request-id": "req_42" } }),
     ]);
-    const res = await client(fetch).systemOne("x", { a: noul("y") });
+    const res = await client(fetch).systemOne("x", {
+      department: choice("d", { billing: null, technical: null, sales: null }),
+      frustration: score("f", ["Calm", "Frustrated", "Very angry"]),
+      is_urgent: noul("u"),
+    });
     expect(res.model).toBe("jev-latest");
     expect(res.usage.inputTokens).toBe(312);
     expect(res.answers.size).toBe(3);
@@ -258,7 +409,8 @@ describe("responses", () => {
       type: "span",
       start: 3,
     });
-    // A lookup of the wrong type is undefined, not a wrong answer.
+    // A lookup of the wrong type does not compile, and is undefined, not a wrong answer.
+    // @ts-expect-error department is a choice
     expect(res.noul("department")).toBeUndefined();
   });
 
@@ -276,7 +428,9 @@ describe("responses", () => {
         },
       }),
     ]);
-    const res = await client(fetch).systemOne("x", { a: noul("y") });
+    const res = await client(fetch).systemOne("x", {
+      c: choice("y", { z: null, a: null, m: null }),
+    });
     expect(Object.keys(res.choice("c")?.probabilities ?? {})).toEqual(["z", "a", "m"]);
   });
 
@@ -303,7 +457,8 @@ describe("responses", () => {
     const { fetch, calls } = stubFetch([
       json({ models: [{ name: "jev-2", description: "d", release_date: "2025-11-12" }] }),
     ]);
-    const res = await client(fetch).models().list();
+    const res = await client(fetch).models.list();
+    expect(res.models[0]?.releaseDate).toBe("2025-11-12");
     expect(res.models[0]?.name).toBe("jev-2");
     expect(calls[0]?.url).toContain("/v1/models");
     expect(calls[0]?.init.method).toBe("GET");
@@ -464,8 +619,7 @@ describe("errors and retries", () => {
       json({ models: [{ name: "a", description: "", release_date: "" }, {}] }),
     ]);
     const error = await client(fetch)
-      .models()
-      .list()
+      .models.list()
       .catch((e: unknown) => e);
     expect((error as ResponseValidationError).fieldPath).toBe("models[1].name");
   });
@@ -481,17 +635,38 @@ describe("errors and retries", () => {
   });
 
   it("does not send when the signal is already aborted", async () => {
-    let sent = false;
-    const fetch = ((_url: string, init: RequestInit) => {
-      sent = !init.signal?.aborted;
-      return Promise.reject(new Error("aborted"));
-    }) as unknown as typeof globalThis.fetch;
+    const { fetch, calls } = stubFetch([json(ANSWERS)]);
     const ac = new AbortController();
-    ac.abort();
-    await expect(
-      client(fetch).systemOne("x", { a: noul("y") }, { signal: ac.signal }),
-    ).rejects.toThrow();
-    expect(sent).toBe(false);
+    const reason = new Error("gone");
+    ac.abort(reason);
+    const error = await client(fetch)
+      .systemOne("x", { a: noul("y") }, { signal: ac.signal })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UserAbortError);
+    expect((error as UserAbortError).name).toBe("UserAbortError");
+    expect((error as UserAbortError).cause).toBe(reason);
+    expect(isTypeSafeError(error)).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws UserAbortError when the signal aborts a request in flight, and does not retry", async () => {
+    const calls: number[] = [];
+    const fetch = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        calls.push(1);
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof globalThis.fetch;
+    const ac = new AbortController();
+    const pending = client(fetch, { retry: { predicate: () => true } }).systemOne(
+      "x",
+      { a: noul("y") },
+      { signal: ac.signal },
+    );
+    setTimeout(() => ac.abort("navigated away"), 5);
+    const error = await pending.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UserAbortError);
+    expect((error as UserAbortError).cause).toBe("navigated away");
+    expect(calls).toHaveLength(1);
   });
 
   it("ends a retry wait when the signal aborts", async () => {
@@ -500,9 +675,25 @@ describe("errors and retries", () => {
     const pending = client(fetch, {
       retry: { backoffInitialMs: 20_000, backoffMaxMs: 20_000, backoffJitter: 0 },
     }).systemOne("x", { a: noul("y") }, { signal: ac.signal });
-    setTimeout(() => ac.abort(new Error("stop")), 10);
-    await expect(pending).rejects.toThrow("stop");
+    const reason = new Error("stop");
+    setTimeout(() => ac.abort(reason), 10);
+    const error = await pending.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UserAbortError);
+    expect((error as UserAbortError).cause).toBe(reason);
     expect(calls.length).toBe(1);
+  });
+
+  it("maps a signal that timed out to TimeoutError", async () => {
+    const fetch = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof globalThis.fetch;
+    const error = await client(fetch)
+      .systemOne("x", { a: noul("y") }, { signal: AbortSignal.timeout(5) })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect((error as TimeoutError).timeoutMs).toBeUndefined();
+    expect(((error as TimeoutError).cause as DOMException).name).toBe("TimeoutError");
   });
 
   it("computes backoff the way the other SDKs do", () => {
@@ -685,7 +876,7 @@ describe("record and replay", () => {
       expect(miss.path).toBe(join(dir, `${miss.key}.json`));
       expect(miss.message).toContain(miss.path);
       expect(calls).toHaveLength(0);
-      await expect(replaying.models().list()).rejects.toThrow(ConfigError);
+      await expect(replaying.models.list()).rejects.toThrow(ConfigError);
       expect(calls).toHaveLength(0);
     });
   });
@@ -715,22 +906,27 @@ describe("record and replay", () => {
     });
   });
 
-  it("reads the directories from the environment", () => {
+  it("reads the directories from the environment in fromEnv", () => {
     const c = withEnv({ TYPESAFE_RECORD: "rec", TYPESAFE_REPLAY: undefined }, () =>
-      client(stubFetch([]).fetch),
+      Client.fromEnv({ apiKey: "sk-test" }),
     );
     expect(c.recordDir).toBe("rec");
     expect(c.replayDir).toBeUndefined();
-    const r = withEnv({ TYPESAFE_RECORD: undefined, TYPESAFE_REPLAY: "tape" }, () =>
+    const r = Client.fromEnv({ env: { TYPESAFE_REPLAY: "tape" } });
+    expect(r.replayDir).toBe("tape");
+    // The constructor never does.
+    const plain = withEnv({ TYPESAFE_RECORD: "rec", TYPESAFE_REPLAY: undefined }, () =>
       client(stubFetch([]).fetch),
     );
-    expect(r.replayDir).toBe("tape");
+    expect(plain.recordDir).toBeUndefined();
   });
 
   it("lets an explicit option win over the environment", () => {
-    const c = withEnv({ TYPESAFE_RECORD: "rec", TYPESAFE_REPLAY: undefined }, () =>
-      client(stubFetch([]).fetch, { replay: "tape" }),
-    );
+    const c = Client.fromEnv({
+      apiKey: "sk-test",
+      replay: "tape",
+      env: { TYPESAFE_RECORD: "rec" },
+    });
     expect(c.replayDir).toBe("tape");
     expect(c.recordDir).toBeUndefined();
   });
@@ -738,13 +934,12 @@ describe("record and replay", () => {
   it("refuses to record and replay at once", () => {
     expect(() => client(stubFetch([]).fetch, { record: "a", replay: "b" })).toThrow(ConfigError);
     expect(() =>
-      withEnv({ TYPESAFE_RECORD: "a", TYPESAFE_REPLAY: "b" }, () => client(stubFetch([]).fetch)),
+      Client.fromEnv({ apiKey: "k", env: { TYPESAFE_RECORD: "a", TYPESAFE_REPLAY: "b" } }),
     ).toThrow(/TYPESAFE_RECORD and TYPESAFE_REPLAY/);
   });
 
   it("still needs an API key to record", () => {
-    expect(() =>
-      withEnv({ TYPESAFE_API_KEY: undefined }, () => new Client({ record: "rec" })),
-    ).toThrow(ConfigError);
+    expect(() => new Client({ record: "rec" })).toThrow(ConfigError);
+    expect(() => Client.fromEnv({ record: "rec", env: {} })).toThrow(ConfigError);
   });
 });

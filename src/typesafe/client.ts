@@ -21,18 +21,25 @@ import {
   VERSION,
 } from "./constants.js";
 import {
+  abortError,
   ApiError,
   ConfigError,
   ConnectionError,
-  type Headers,
+  InvalidRequestError,
   lenientBody,
+  type ResponseHeaders,
   ResponseValidationError,
   TimeoutError,
   TypeSafeError,
 } from "./errors.js";
 import type { Questions } from "./questions.js";
 import { questionsToJson, validateQuestions } from "./questions.js";
-import type { ListModelsResponse, ResponseMeta, SystemOneResponse } from "./responses.js";
+import type {
+  AnswerNamesOf,
+  ListModelsResponse,
+  ResponseMeta,
+  SystemOneResponse,
+} from "./responses.js";
 import {
   DecodeFailure,
   decodeModels,
@@ -50,13 +57,16 @@ import {
   validateRetryPolicy,
 } from "./retry.js";
 
-/** How a {@link Client} is configured. Explicit settings win over environment variables. */
+/**
+ * How a {@link Client} is configured. `new Client(options)` uses these and nothing else;
+ * {@link Client.fromEnv} fills the unset ones from environment variables, named in parentheses.
+ */
 export interface ClientOptions {
-  /** API key (else `TYPESAFE_API_KEY`). */
+  /** API key (`TYPESAFE_API_KEY`). Required unless the client replays. */
   apiKey?: string;
-  /** API root (else `TYPESAFE_BASE_URL`, else `https://api.typesafe.ai`). */
+  /** API root (`TYPESAFE_BASE_URL`), default `https://api.typesafe.ai`. */
   baseUrl?: string;
-  /** Default model (else `TYPESAFE_DEFAULT_MODEL`, else `jev-latest`). */
+  /** Default model (`TYPESAFE_DEFAULT_MODEL`), default `jev-latest`. */
   model?: string;
   /** Per-attempt timeout in milliseconds (default 10000). */
   timeoutMs?: number;
@@ -67,20 +77,23 @@ export interface ClientOptions {
   /** Replace the `fetch` implementation (tests, proxies, instrumentation). */
   fetch?: typeof globalThis.fetch;
   /**
-   * Write every successful `systemOne` response body to `<dir>/<key>.json` (else
-   * `TYPESAFE_RECORD`). Node only.
+   * Write every successful `systemOne` response body to `<dir>/<key>.json`
+   * (`TYPESAFE_RECORD`). Node only.
    */
   record?: string;
   /**
-   * Answer `systemOne` from `<dir>/<key>.json` and never touch the network (else
-   * `TYPESAFE_REPLAY`). No API key is needed; a request with no recording throws
+   * Answer `systemOne` from `<dir>/<key>.json` and never touch the network
+   * (`TYPESAFE_REPLAY`). No API key is needed; a request with no recording throws
    * {@link ReplayMissError}. Node only.
    */
   replay?: string;
+}
+
+/** How {@link Client.fromEnv} is configured: explicit settings win over environment variables. */
+export interface FromEnvOptions extends ClientOptions {
   /**
-   * Read the environment variables above from this record instead of Node's environment: `{}`
-   * ignores the environment entirely, which keeps a stray `TYPESAFE_REPLAY` or `TYPESAFE_API_KEY`
-   * out of tests and multi-tenant servers. Default: Node's environment, nothing in a browser.
+   * Read the environment variables from this record instead of Node's environment, e.g. a
+   * tenant's settings on a multi-tenant server. Default: Node's environment, nothing in a browser.
    */
   env?: Record<string, string | undefined>;
 }
@@ -100,8 +113,17 @@ export interface CallOptions {
    * field. Useful for API fields this SDK version does not model yet.
    */
   extraBody?: JsonObject;
-  /** Abort this call from outside. */
+  /**
+   * Abort this call from outside. An abort throws {@link UserAbortError} with the signal's reason
+   * as its `cause`, or {@link TimeoutError} when the signal timed out (`AbortSignal.timeout(ms)`).
+   */
   signal?: AbortSignal;
+}
+
+/** The Models resource: `client.models.list()`. */
+export interface ModelsResource {
+  /** The models available to the account. */
+  list(options?: CallOptions): Promise<ListModelsResponse>;
 }
 
 /**
@@ -160,25 +182,44 @@ function withoutSecrets(error: unknown, url: string, authorization: string | und
   return copy(error, 0);
 }
 
+/**
+ * `state` as the JSON it will be sent as. Anything `JSON.stringify` refuses or drops (a cycle, a
+ * BigInt, a function, `undefined`) is an {@link InvalidRequestError} before anything is sent.
+ */
+function encodeState(state: unknown): Json {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(state);
+  } catch (e) {
+    throw new InvalidRequestError(
+      `state could not be encoded as JSON: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+  if (text === undefined) {
+    throw new InvalidRequestError(`state could not be encoded as JSON: got ${typeof state}.`);
+  }
+  return JSON.parse(text) as Json;
+}
+
 function checkBaseUrl(url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch (e) {
     throw new ConfigError(
-      `base_url ${JSON.stringify(url)} is not a valid URL: ${e instanceof Error ? e.message : e}.`,
+      `baseUrl ${JSON.stringify(url)} is not a valid URL: ${e instanceof Error ? e.message : e}.`,
     );
   }
   if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.hostname === "") {
     throw new ConfigError(
-      `base_url must be an http(s) URL with a host, got ${JSON.stringify(url)}.`,
+      `baseUrl must be an http(s) URL with a host, got ${JSON.stringify(url)}.`,
     );
   }
 }
 
 function checkTimeout(ms: number): number {
   if (!(ms > 0) || !Number.isFinite(ms)) {
-    throw new ConfigError("timeout must be a positive duration.");
+    throw new ConfigError("timeoutMs must be a positive duration.");
   }
   return ms;
 }
@@ -197,8 +238,8 @@ function redactUrl(url: string): string {
   }
 }
 
-function headerRecord(headers: globalThis.Headers): Headers {
-  const out: Headers = {};
+function headerRecord(headers: globalThis.Headers): ResponseHeaders {
+  const out: ResponseHeaders = {};
   headers.forEach((value, key) => {
     out[key.toLowerCase()] = value;
   });
@@ -227,16 +268,19 @@ export class Client {
   readonly #record: string | undefined;
   readonly #replay: string | undefined;
 
+  /** The Models resource. */
+  readonly models: ModelsResource;
+
+  /**
+   * A client configured by `options` alone; nothing is read from the environment (see
+   * {@link Client.fromEnv}). Throws {@link ConfigError} for a missing or malformed key, a bad base
+   * URL, timeout or retry policy, or both `record` and `replay`.
+   */
   constructor(options: ClientOptions = {}) {
-    // Either option set by hand decides the mode; the environment only speaks when neither is.
-    const explicit = options.record !== undefined || options.replay !== undefined;
-    const record = explicit ? options.record : env(RECORD_ENV, options.env);
-    const replay = explicit ? options.replay : env(REPLAY_ENV, options.env);
+    const { record, replay } = options;
     if (record !== undefined && replay !== undefined) {
       throw new ConfigError(
-        explicit
-          ? "record and replay cannot both be set: a client either records or replays."
-          : `${RECORD_ENV} and ${REPLAY_ENV} cannot both be set: a client either records or replays.`,
+        "record and replay cannot both be set: a client either records or replays.",
       );
     }
     for (const [name, dir] of [
@@ -248,10 +292,10 @@ export class Client {
       }
     }
 
-    const apiKey = (options.apiKey ?? env(API_KEY_ENV, options.env))?.trim() || undefined;
+    const apiKey = options.apiKey?.trim() || undefined;
     if (replay === undefined && apiKey === undefined) {
       throw new ConfigError(
-        `No API key was provided. Pass apiKey or set the ${API_KEY_ENV} environment variable.`,
+        `No API key was provided. Pass apiKey, or use Client.fromEnv() to read ${API_KEY_ENV}.`,
       );
     }
     if (apiKey !== undefined && !/^[\x21-\x7e]+$/.test(apiKey)) {
@@ -259,16 +303,13 @@ export class Client {
         "API key must contain only printable ASCII characters without whitespace.",
       );
     }
-    const baseUrl = (options.baseUrl ?? env(BASE_URL_ENV, options.env) ?? DEFAULT_BASE_URL).replace(
-      /\/+$/,
-      "",
-    );
+    const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     checkBaseUrl(baseUrl);
     const retry = { ...defaultRetryPolicy(), ...options.retry };
     validateRetryPolicy(retry);
 
     this.#baseUrl = baseUrl;
-    this.#model = options.model ?? env(DEFAULT_MODEL_ENV, options.env) ?? DEFAULT_MODEL;
+    this.#model = options.model ?? DEFAULT_MODEL;
     this.#timeoutMs = checkTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.#retry = retry;
     this.#headers = { ...options.headers };
@@ -283,11 +324,39 @@ export class Client {
       [SDK_HEADER]: ident,
       [RUNTIME_HEADER]: runtime(),
     };
+    this.models = { list: (listOptions) => this.#listModels(listOptions) };
   }
 
-  /** A client configured entirely from the environment. */
-  static fromEnv(options: Omit<ClientOptions, "apiKey"> = {}): Client {
-    return new Client(options);
+  /**
+   * A client configured from the environment: `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL`,
+   * `TYPESAFE_DEFAULT_MODEL`, `TYPESAFE_RECORD` and `TYPESAFE_REPLAY`, read from `options.env`
+   * (default: Node's environment). A setting passed in `options` wins over its variable; setting
+   * either `record` or `replay` leaves both variables unread.
+   */
+  static fromEnv(options: FromEnvOptions = {}): Client {
+    const { env: source, ...explicit } = options;
+    const hand = explicit.record !== undefined || explicit.replay !== undefined;
+    const record = hand ? explicit.record : env(RECORD_ENV, source);
+    const replay = hand ? explicit.replay : env(REPLAY_ENV, source);
+    if (!hand && record !== undefined && replay !== undefined) {
+      throw new ConfigError(
+        `${RECORD_ENV} and ${REPLAY_ENV} cannot both be set: a client either records or replays.`,
+      );
+    }
+    const apiKey = explicit.apiKey ?? env(API_KEY_ENV, source);
+    if (replay === undefined && (apiKey === undefined || apiKey.trim() === "")) {
+      throw new ConfigError(
+        `No API key was provided. Pass apiKey or set the ${API_KEY_ENV} environment variable.`,
+      );
+    }
+    return new Client({
+      ...explicit,
+      apiKey,
+      baseUrl: explicit.baseUrl ?? env(BASE_URL_ENV, source),
+      model: explicit.model ?? env(DEFAULT_MODEL_ENV, source),
+      record,
+      replay,
+    });
   }
 
   /** The default model. */
@@ -306,33 +375,36 @@ export class Client {
   }
 
   /**
-   * Ask typed questions about `state` (a string, or any JSON).
+   * Ask typed questions about `state`: a string, or anything JSON-serialisable (checked when the
+   * request is encoded; anything else is an {@link InvalidRequestError}). When the questions'
+   * names are known, `res.noul(name)` and its siblings only take the names of that kind.
    *
    * When recording, the response body is written under its {@link cassetteKey}; when replaying,
    * it is read from there instead and nothing is sent.
    */
-  async systemOne(
-    state: Json,
-    questions: Questions,
+  async systemOne<const Q extends Questions>(
+    state: unknown,
+    questions: Q,
     options: CallOptions = {},
-  ): Promise<SystemOneResponse> {
+  ): Promise<SystemOneResponse<AnswerNamesOf<Q>>> {
     validateQuestions(questions);
     const extra = options.extraBody ?? {};
     const body: JsonObject = {};
-    if (!("state" in extra)) body["state"] = state;
+    if (!("state" in extra)) body["state"] = encodeState(state);
     if (!("model" in extra)) body["model"] = options.model ?? this.#model;
     if (!("questions" in extra)) body["questions"] = questionsToJson(questions);
     Object.assign(body, extra);
 
     if (this.#replay !== undefined) {
+      if (options.signal?.aborted) throw abortError(options.signal);
       const key = await cassetteKey(body);
       const text = await readCassette(this.#replay, key);
       const meta: ResponseMeta = { status: 200, headers: {}, attempts: 0 };
-      return this.#decodeSystemOne(text, meta, `replay ${this.#replay}`);
+      return this.#decodeSystemOne<Q>(text, meta, `replay ${this.#replay}`);
     }
 
     const { text, meta, endpoint } = await this.#execute("POST", SYSTEM_ONE_PATH, body, options);
-    const response = this.#decodeSystemOne(text, meta, endpoint);
+    const response = this.#decodeSystemOne<Q>(text, meta, endpoint);
     if (this.#record !== undefined) {
       // The same bytes `jev eval --cache` keeps, so either one can read the other's directory.
       await writeCassette(this.#record, await cassetteKey(body), `${pretty(response.raw)}\n`);
@@ -347,18 +419,22 @@ export class Client {
    * wrong type, or a label the choice does not have is a {@link ResponseValidationError}.
    */
   async ask<R extends RubricQuestions>(
+    state: unknown,
     rubric: Rubric<R>,
-    state: Json,
     options: CallOptions = {},
   ): Promise<RubricResponse<R>> {
     const response = await this.systemOne(state, rubric.questions, options);
     return { answers: rubric.decode(response), response };
   }
 
-  #decodeSystemOne(text: string, meta: ResponseMeta, endpoint: string): SystemOneResponse {
+  #decodeSystemOne<Q extends Questions>(
+    text: string,
+    meta: ResponseMeta,
+    endpoint: string,
+  ): SystemOneResponse<AnswerNamesOf<Q>> {
     try {
       const decoded = decodeSystemOne(text);
-      return makeSystemOneResponse(
+      return makeSystemOneResponse<AnswerNamesOf<Q>>(
         decoded.model,
         decoded.usage,
         decoded.answers,
@@ -370,29 +446,19 @@ export class Client {
     }
   }
 
-  /** The Models resource. */
-  models(): { list(options?: CallOptions): Promise<ListModelsResponse> } {
-    return {
-      list: async (options: CallOptions = {}): Promise<ListModelsResponse> => {
-        if (this.#replay !== undefined) {
-          throw new ConfigError(
-            "models().list() is not recorded, and a replaying client never sends a request.",
-          );
-        }
-        const { text, meta, endpoint } = await this.#execute(
-          "GET",
-          MODELS_PATH,
-          undefined,
-          options,
-        );
-        try {
-          const { models, raw } = decodeModels(text);
-          return { models, raw, meta };
-        } catch (e) {
-          throw this.#validationError(e, text, meta, endpoint);
-        }
-      },
-    };
+  async #listModels(options: CallOptions = {}): Promise<ListModelsResponse> {
+    if (this.#replay !== undefined) {
+      throw new ConfigError(
+        "models.list() is not recorded, and a replaying client never sends a request.",
+      );
+    }
+    const { text, meta, endpoint } = await this.#execute("GET", MODELS_PATH, undefined, options);
+    try {
+      const { models, raw } = decodeModels(text);
+      return { models, raw, meta };
+    } catch (e) {
+      throw this.#validationError(e, text, meta, endpoint);
+    }
   }
 
   #validationError(e: unknown, text: string, meta: ResponseMeta, endpoint: string): unknown {
@@ -430,7 +496,7 @@ export class Client {
       try {
         payload = JSON.stringify(body);
       } catch (e) {
-        throw new TypeSafeError(
+        throw new InvalidRequestError(
           `The request body could not be encoded as JSON: ${e instanceof Error ? e.message : e}`,
         );
       }
@@ -440,6 +506,7 @@ export class Client {
     const started = Date.now();
     let attempts = 0;
     for (;;) {
+      if (options.signal?.aborted) throw abortError(options.signal);
       const attemptHeaders = { ...headers };
       if (attempts > 0) attemptHeaders[RETRY_COUNT_HEADER] = String(attempts);
       attempts += 1;
@@ -462,7 +529,14 @@ export class Client {
         if (!(error instanceof TypeSafeError) || !isRetryable(retry, error)) throw error;
         const delay = retryDelayMs(retry, attempts, error);
         if (shouldStop(retry, attempts, Date.now() - started, delay)) throw error;
-        if (delay > 0) await sleep(delay, options.signal);
+        if (delay > 0) {
+          try {
+            await sleep(delay, options.signal);
+          } catch (e) {
+            if (options.signal?.aborted) throw abortError(options.signal);
+            throw e;
+          }
+        }
       }
     }
   }
@@ -475,7 +549,7 @@ export class Client {
     body: string | undefined,
     timeoutMs: number,
     signal: AbortSignal | undefined,
-  ): Promise<{ text: string; status: number; headers: Headers }> {
+  ): Promise<{ text: string; status: number; headers: ResponseHeaders }> {
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -503,7 +577,7 @@ export class Client {
     } catch (e) {
       if (e instanceof TypeSafeError) throw e;
       if (timedOut) throw new TimeoutError(timeoutMs);
-      if (signal?.aborted) throw e;
+      if (signal?.aborted) throw abortError(signal);
       throw new ConnectionError(withoutSecrets(e, url, headers["authorization"]));
     } finally {
       clearTimeout(timer);

@@ -13,7 +13,7 @@ import type { Outcome } from "../src/repl/editor.js";
 import * as sketch from "../src/repl/sketch.js";
 import { PRESETS } from "../src/repl/presets.js";
 import { render } from "../src/repl/ui.js";
-import { Buffer } from "../src/tui/buffer.js";
+import { ScreenBuffer } from "../src/tui/buffer.js";
 import { char, ctrl, key } from "../src/tui/keys.js";
 import type { KeyCode } from "../src/tui/keys.js";
 import { linesText } from "../src/tui/style.js";
@@ -414,7 +414,7 @@ describe("sketch mode in the app", () => {
     a.exec(":preset triage");
     a.exec(":sketch");
     const draw = (width = 140, height = 40): string => {
-      const buffer = new Buffer(width, height);
+      const buffer = new ScreenBuffer(width, height);
       render(buffer, a);
       return buffer.toString();
     };

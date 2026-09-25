@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type { Json } from "../src/json.js";
-import type { Answer, NoulAnswer, ScoreAnswer } from "../src/index.js";
+import type { Answer, NoulAnswer, Rubric, ScoreAnswer } from "../src/index.js";
 import { Client, ResponseValidationError, choice, noul, raw, rubric, score } from "../src/index.js";
 
 const TRIAGE = rubric({
@@ -73,7 +73,7 @@ function withAnswers(edit: (answers: Record<string, Json>) => void): Json {
 
 async function failure(body: Json): Promise<ResponseValidationError> {
   const error = await clientAnswering(body)
-    .client.ask(TRIAGE, "x")
+    .client.ask("x", TRIAGE)
     .catch((e: unknown) => e);
   expect(error).toBeInstanceOf(ResponseValidationError);
   return error as ResponseValidationError;
@@ -82,7 +82,7 @@ async function failure(body: Json): Promise<ResponseValidationError> {
 describe("rubric", () => {
   it("sends its questions and reads the answers back by name", async () => {
     const { client, sent } = clientAnswering(BODY);
-    const { answers, response } = await client.ask(TRIAGE, "The payout failed again.");
+    const { answers, response } = await client.ask("The payout failed again.", TRIAGE);
     expect(sent[0]).toEqual({
       state: "The payout failed again.",
       model: "jev-latest",
@@ -117,6 +117,20 @@ describe("rubric", () => {
     expect(Object.keys(answers).sort()).toEqual(["department", "frustration", "is_urgent"]);
     expect(response.requestId).toBe("req_1");
     expect(response.usage.inputTokens).toBe(312);
+    expect(response.noul("is_urgent")?.noul).toBe(0.999);
+  });
+
+  it("takes the state first, the way systemOne and the other SDKs do", () => {
+    const { client } = clientAnswering(BODY);
+    expectTypeOf(client.ask<typeof TRIAGE.questions>)
+      .parameter(1)
+      .toEqualTypeOf<Rubric<typeof TRIAGE.questions>>();
+    // @ts-expect-error the rubric goes second
+    const wrongWayRound = () => client.ask(TRIAGE, "The payout failed again.");
+    expect(typeof wrongWayRound).toBe("function");
+    // The response it came from narrows its lookups by the rubric's questions.
+    type Response = Awaited<ReturnType<typeof client.ask<typeof TRIAGE.questions>>>["response"];
+    expectTypeOf<Parameters<Response["choice"]>[0]>().toEqualTypeOf<"department">();
   });
 
   it("types each answer by its question", () => {
@@ -183,9 +197,9 @@ describe("rubric", () => {
   it("replays what it recorded", async () => {
     const dir = mkdtempSync(join(tmpdir(), "jev-rubric-"));
     try {
-      await clientAnswering(BODY, { record: dir }).client.ask(TRIAGE, "state");
+      await clientAnswering(BODY, { record: dir }).client.ask("state", TRIAGE);
       const replaying = new Client({ replay: dir });
-      const { answers } = await replaying.ask(TRIAGE, "state");
+      const { answers } = await replaying.ask("state", TRIAGE);
       expect(answers.is_urgent.noul).toBe(0.999);
     } finally {
       rmSync(dir, { recursive: true, force: true });
