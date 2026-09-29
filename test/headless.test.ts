@@ -141,7 +141,7 @@ describe("what it prints", () => {
 
   it("prints the session as code in either language", () => {
     const s = session();
-    expect(headless.codeText(s, "ts", "jev-latest", 0.5)).toContain("client.systemOne");
+    expect(headless.codeText(s, "ts", "jev-latest", 0.5)).toContain("client.ask(");
     expect(headless.codeText(s, "rust", "jev-latest", 0.5)).toContain("typesafe");
     expect(headless.codeText(s, "ts", "jev-latest", 0.5).endsWith("\n")).toBe(true);
   });

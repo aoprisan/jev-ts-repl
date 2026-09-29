@@ -290,7 +290,7 @@ export class App {
           this.#heading("models");
           for (const m of msg.response.models) {
             this.#push(
-              line([span("  "), bold(m.name), dim(`  ${m.release_date}  ${m.description}`)]),
+              line([span("  "), bold(m.name), dim(`  ${m.releaseDate}  ${m.description}`)]),
             );
           }
         } else {
@@ -1056,7 +1056,7 @@ export class App {
     if (this.mock || !this.client) {
       this.#heading("models (mock)");
       for (const m of mock.models()) {
-        this.#push(line([span("  "), bold(m.name), dim(`  ${m.release_date}  ${m.description}`)]));
+        this.#push(line([span("  "), bold(m.name), dim(`  ${m.releaseDate}  ${m.description}`)]));
       }
       this.#note("simulated — :key <api-key> to list the real ones.");
       return;
@@ -1064,13 +1064,10 @@ export class App {
     const client = this.client;
     this.pending = true;
     this.#note("GET /v1/models …");
-    void client
-      .models()
-      .list()
-      .then(
-        (response) => this.#send({ kind: "models", response }),
-        (error: unknown) => this.#send({ kind: "models", error }),
-      );
+    void client.models.list().then(
+      (response) => this.#send({ kind: "models", response }),
+      (error: unknown) => this.#send({ kind: "models", error }),
+    );
   }
 
   #timeoutCmd(args: string): void {
@@ -1125,7 +1122,7 @@ export class App {
       return;
     }
     try {
-      this.client = new Client({ apiKey: args });
+      this.client = Client.fromEnv({ apiKey: args });
       this.mock = false;
       this.#note(`key accepted (${masked(args)}); mock off, calls go to the API now.`);
     } catch (e) {

@@ -20,8 +20,112 @@
  * Everything the REPL is made of is exported too, so a session can be driven without a terminal.
  */
 
-// The client: questions, answers, errors, retries.
-export * from "./typesafe/index.js";
+// The client, named one by one as `./typesafe/index.ts` names it: its internals stay unexported.
+// Configuration users set, and the version the client reports.
+export {
+  API_KEY_ENV,
+  BASE_URL_ENV,
+  DEFAULT_BASE_URL,
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_ENV,
+  DEFAULT_TIMEOUT_MS,
+  RECORD_ENV,
+  REPLAY_ENV,
+  VERSION,
+} from "./typesafe/constants.js";
+
+// Errors: one class per failure, and a check that works across copies of the SDK.
+export {
+  ApiError,
+  AuthenticationError,
+  BadRequestError,
+  ConfigError,
+  ConnectionError,
+  InternalServerError,
+  InvalidRequestError,
+  isTypeSafeError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+  ResponseValidationError,
+  TimeoutError,
+  TypeSafeError,
+  UnprocessableEntityError,
+  UserAbortError,
+} from "./typesafe/errors.js";
+export type { ApiErrorKind, ResponseHeaders } from "./typesafe/errors.js";
+
+// Questions and their wire form.
+export {
+  choice,
+  noul,
+  questionFromJson,
+  questionsToJson,
+  questionToJson,
+  raw,
+  score,
+  withOption,
+} from "./typesafe/questions.js";
+export type {
+  ChoiceOption,
+  ChoiceQuestion,
+  NoulCriteria,
+  NoulQuestion,
+  Question,
+  Questions,
+  RawQuestion,
+  ScoreQuestion,
+} from "./typesafe/questions.js";
+
+// Answers and the responses that carry them.
+export {
+  answerConfidence,
+  isYes,
+  mostLikelyLevel,
+  ranked,
+  roundedLevel,
+} from "./typesafe/responses.js";
+export type {
+  Answer,
+  AnswerNames,
+  AnswerNamesOf,
+  ChoiceAnswer,
+  ListModelsResponse,
+  ModelMetadata,
+  NoulAnswer,
+  QuestionName,
+  ResponseMeta,
+  ScoreAnswer,
+  SystemOneResponse,
+  Usage,
+} from "./typesafe/responses.js";
+
+// Retries.
+export { defaultRetryPolicy, noRetries } from "./typesafe/retry.js";
+export type { RetryPolicy } from "./typesafe/retry.js";
+
+// Rubrics: questions named once, answers typed by them.
+export { rubric } from "./typesafe/rubric.js";
+export type {
+  AnswerTo,
+  ChoiceAnswerOf,
+  Rubric,
+  RubricAnswers,
+  RubricQuestions,
+  RubricResponse,
+} from "./typesafe/rubric.js";
+
+// Record and replay.
+export { cassetteKey, ReplayMissError } from "./typesafe/cassette.js";
+
+// The client.
+export { Client } from "./typesafe/client.js";
+export type {
+  CallOptions,
+  ClientOptions,
+  FromEnvOptions,
+  ModelsResource,
+} from "./typesafe/client.js";
 
 // JSON helpers the question and answer shapes are built from.
 export type { Json, JsonObject } from "./json.js";
@@ -83,7 +187,7 @@ export type { Cursor } from "./repl/ui.js";
 export * as wrap from "./repl/wrap.js";
 
 // The terminal pieces, so the REPL can be embedded or screenshotted.
-export { Buffer } from "./tui/buffer.js";
+export { ScreenBuffer } from "./tui/buffer.js";
 export * as layout from "./tui/layout.js";
 export { char, ctrl, decodeOne, isCtrl, key, KeyDecoder } from "./tui/keys.js";
 export type { KeyCode, KeyEvent } from "./tui/keys.js";

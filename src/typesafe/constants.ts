@@ -19,7 +19,7 @@ export const DEFAULT_MODEL = "jev-latest";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Package version, sent in `User-Agent` and `X-TypeSafe-SDK`. */
-export const VERSION = "0.7.0";
+export const VERSION = "0.9.0";
 /** SDK identifier sent in `User-Agent` and `X-TypeSafe-SDK`. */
 export const SDK_NAME = "jev-repl-ts";
 
@@ -35,7 +35,7 @@ export const REQUEST_ID_HEADER = "x-typesafe-request-id";
 export const RETRY_AFTER_HEADER = "retry-after";
 export const RETRY_AFTER_MS_HEADER = "retry-after-ms";
 
-export const SECRET_HEADERS = [
+export const SECRET_HEADERS: readonly string[] = [
   "authorization",
   "proxy-authorization",
   "x-api-key",

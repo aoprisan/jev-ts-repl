@@ -1,6 +1,6 @@
 {
   "name": "jev-repl",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "description": "Terminal REPL for shaping TypeSafe AI System One requests: noul, choice and score questions, with a live sketch editor",
   "keywords": [
     "typesafe",
@@ -31,14 +31,19 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./core": {
       "types": "./dist/core.d.ts",
-      "import": "./dist/core.js"
+      "import": "./dist/core.js",
+      "default": "./dist/core.js"
     },
     "./package.json": "./package.json"
   },
+  "sideEffects": [
+    "./dist/cli.js"
+  ],
   "files": [
     "dist",
     "README.md",

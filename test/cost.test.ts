@@ -7,7 +7,7 @@ import * as cost from "../src/repl/cost.js";
 import { Editor } from "../src/repl/editor.js";
 import { costLines } from "../src/repl/format.js";
 import { render } from "../src/repl/ui.js";
-import { Buffer } from "../src/tui/buffer.js";
+import { ScreenBuffer } from "../src/tui/buffer.js";
 import { ctrl } from "../src/tui/keys.js";
 import { linesText } from "../src/tui/style.js";
 
@@ -235,7 +235,7 @@ describe(":cost", () => {
   it("shows the estimate in the session panel and as a sketch preview", () => {
     const a = app();
     a.exec(":preset triage");
-    const panel = new Buffer(100, 26);
+    const panel = new ScreenBuffer(100, 26);
     render(panel, a);
     expect(panel.toString()).toContain("cost");
 
@@ -244,7 +244,7 @@ describe(":cost", () => {
     a.sketch.key(ctrl("p"));
     a.sketch.key(ctrl("p"));
     expect(a.sketch.preview).toBe("cost");
-    const screen = new Buffer(100, 26);
+    const screen = new ScreenBuffer(100, 26);
     render(screen, a);
     expect(screen.toString()).toContain("total");
   });

@@ -10,6 +10,7 @@ import {
   InvalidRequestError,
   ResponseValidationError,
   TimeoutError,
+  UserAbortError,
 } from "../typesafe/errors.js";
 import type { Question } from "../typesafe/questions.js";
 import { questionToJson } from "../typesafe/questions.js";
@@ -339,7 +340,7 @@ export function errorLines(error: unknown): Line[] {
   const message = error instanceof Error ? error.message : String(error);
   const lines: Line[] = [line([span(`  ${variant}  `, { fg: BAD, bold: true }), span(message)])];
   if (error instanceof ResponseValidationError) {
-    lines.push(line([span("    "), dim(`field_path: ${error.fieldPath}`)]));
+    lines.push(line([span("    "), dim(`fieldPath: ${error.fieldPath}`)]));
   }
   if (error instanceof ApiError) {
     const wait = error.retryAfterMs();
@@ -387,10 +388,13 @@ function classify(error: unknown): { variant: string; advice: string } {
       advice: "An attempt ran past its per-attempt timeout — see :timeout.",
     };
   }
+  if (error instanceof UserAbortError) {
+    return { variant: "UserAbort", advice: "The call was cancelled; nothing more was sent." };
+  }
   if (error instanceof ResponseValidationError) {
     return {
       variant: "ResponseValidation",
-      advice: "A 2xx body was missing required data; field_path points at it.",
+      advice: "A 2xx body was missing required data; fieldPath points at it.",
     };
   }
   return { variant: "Error", advice: "Unhandled variant." };

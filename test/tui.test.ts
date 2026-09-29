@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { Buffer } from "../src/tui/buffer.js";
+import { ScreenBuffer } from "../src/tui/buffer.js";
 import { char, decodeOne, key, KeyDecoder } from "../src/tui/keys.js";
 import type { KeyEvent } from "../src/tui/keys.js";
 import {
@@ -166,7 +166,7 @@ describe("layout", () => {
 
 describe("the buffer", () => {
   it("draws a bordered block and returns the area inside it", () => {
-    const buffer = new Buffer(10, 4);
+    const buffer = new ScreenBuffer(10, 4);
     const inner = buffer.block(buffer.area, { title: line([span("hi")]) });
     expect(inner).toEqual({ x: 1, y: 1, width: 8, height: 2 });
     buffer.paragraph(inner, [line([span("body")])]);
@@ -179,13 +179,13 @@ describe("the buffer", () => {
   });
 
   it("clips a line to the pane instead of wrapping it", () => {
-    const buffer = new Buffer(5, 1);
+    const buffer = new ScreenBuffer(5, 1);
     buffer.paragraph(buffer.area, [line([span("far too long")])]);
     expect(buffer.toString()).toBe("far t");
   });
 
   it("emits an escape only where the style changes", () => {
-    const buffer = new Buffer(4, 1);
+    const buffer = new ScreenBuffer(4, 1);
     buffer.setSpans(0, 0, [span("ab", { fg: "red" }), span("cd", { fg: "red" })]);
     const ansi = buffer.toAnsi();
     const colourChanges = ansi.match(/\[[0-9;]*m/g) ?? [];
@@ -197,7 +197,7 @@ describe("the buffer", () => {
   });
 
   it("survives being drawn at zero size", () => {
-    const buffer = new Buffer(0, 0);
+    const buffer = new ScreenBuffer(0, 0);
     expect(() => buffer.block(buffer.area, { title: line("x") })).not.toThrow();
     expect(() => buffer.paragraph(buffer.area, [blankLine()])).not.toThrow();
     expect(buffer.toString()).toBe("");

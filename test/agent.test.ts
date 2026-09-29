@@ -285,7 +285,7 @@ describe("the tools", () => {
 
   it("writes the page out as a program in either language", async () => {
     const ts = await callTool("jev_code", { page: PAGE, language: "ts" });
-    expect(ts.text).toContain("systemOne");
+    expect(ts.text).toContain("client.ask(");
     const rust = await callTool("jev_code", { page: PAGE, language: "rust" });
     expect(rust.text).toContain("fn main");
     const wrong = await callTool("jev_code", { page: PAGE, language: "python" });

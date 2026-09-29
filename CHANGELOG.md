@@ -3,6 +3,104 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## 0.9.0
+
+### Breaking
+
+- **`Buffer` is `ScreenBuffer`, and `Headers` is `ResponseHeaders`**, so neither shadows a global.
+  Migrate: rename the import.
+- **`ModelMetadata.release_date` is `releaseDate`.** Migrate: read `model.releaseDate`.
+- **Errors name options, not wire fields:** `baseUrl`, `timeoutMs`, `retry.backoffJitter`,
+  `retry.budgetMs` (were `base_url`, `timeout`, `backoff_jitter`, `retry budget`). Migrate: update
+  any code that matches on those messages.
+- **`new Client(options)` no longer reads the environment;** only `Client.fromEnv(options)` does,
+  and the `env` option moved to it (`FromEnvOptions`). Migrate: replace `new Client({ ... })` that
+  relied on `TYPESAFE_*` variables with `Client.fromEnv({ ... })`.
+- **`client.models()` is `client.models`.** Migrate: `client.models().list()` →
+  `client.models.list()`.
+- **`client.ask(state, rubric, options)`**, state first, as `systemOne` and the Rust and Scala SDKs
+  take it. Migrate: swap the first two arguments. `systemOne` is generic over its questions, so
+  `res.noul(name)` and its siblings reject a name of the wrong kind when the questions are written
+  out. Migrate: fix the lookup the compiler names, or type the questions `Questions`.
+- **The package exports its API by name.** Decoders, retry arithmetic, wire paths and header names
+  (`makeSystemOneResponse`, `decodeSystemOne`, `lenientBody`, `validateRetryPolicy`, `isRetryable`,
+  `shouldStop`, `backoffMs`, `sleep`, `SYSTEM_ONE_PATH`, `DecodeFailure`, …) are no longer exported.
+  Migrate: nothing a client call needs went away; copy a helper you relied on.
+- **Aborting a call throws `UserAbortError`** (a `TypeSafeError`, the signal's reason as `cause`),
+  or `TimeoutError` for an `AbortSignal.timeout(ms)` signal, instead of the bare abort reason.
+  Migrate: catch `UserAbortError` where you caught the reason; `TimeoutError.timeoutMs` may be
+  `undefined`.
+- **`state` is `unknown`**, so an interface-typed object is accepted; a state or body that is not
+  JSON-serialisable is an `InvalidRequestError` (a body used to be a plain `TypeSafeError`).
+  Migrate: nothing, unless you caught that `TypeSafeError`.
+- **`"sideEffects": ["./dist/cli.js"]`** lets bundlers drop unused modules. Migrate: nothing.
+
+### Added
+
+- **An error class per status.** A failed call throws `BadRequestError`, `AuthenticationError`,
+  `PermissionDeniedError`, `NotFoundError`, `UnprocessableEntityError`, `RateLimitError` or
+  `InternalServerError`, all subclasses of `ApiError`, so `instanceof RateLimitError` works;
+  `ApiError.from(status, …)` picks one. `kind` is unchanged.
+- **`isTypeSafeError(e)`** recognises an SDK error from another copy of the package or another
+  realm, where `instanceof` does not.
+- **`env` option on `Client.fromEnv`.** `Client.fromEnv({ env })` reads the `TYPESAFE_*`
+  variables from a record of your own instead of `process.env`.
+- A `default` export condition, for tools that do not match `import`.
+
+### Changed
+
+- Error names are spelled out per class rather than read from the constructor, so they survive
+  minification. A subclass of your own that sets no `name` now reports its parent's.
+- `ConnectionError` passes its cause to `Error`'s constructor.
+
+### Fixed
+
+- A one-shot command (`jev run`, `jev eval`, `jev ask`) no longer exits 0 without an answer while
+  waiting to retry a 429 or 5xx.
+- A signal aborted before the call stops it before anything is sent, and an abort ends a retry
+  wait.
+- A choice that lists an option twice is a problem rather than a silent merge.
+- The skill's example page passes `jev check`, and its `@model` line sets the model.
+
+## 0.8.0
+
+### Added
+
+- **Typed answers.** `rubric({...})` names a set of questions once, and `client.ask(rubric, state)`
+  returns `{ answers, response }` with every answer typed by its question: a noul's is a
+  `NoulAnswer`, a score's a `ScoreAnswer`, and a choice's `choice` is the union of its labels. A
+  misspelled name or a label the choice does not have no longer compiles, and the answers are
+  checked when they arrive — a missing one, one of the wrong type, or a label outside the choice
+  is a `ResponseValidationError` naming the field. `rubric.decode(response)` types a response you
+  already have. The counterpart of `response_model` in `typesafe-sdk` 0.7. `choice()` now keeps
+  its labels as literal types; code that passed labels built at run time still gets `string`.
+- **`jev ts` writes the typed version.** The program it prints puts the page's questions in a
+  `rubric` and reads `answers.<name>` from `client.ask`, so the code it hands you type-checks
+  against the page: no `undefined` checks, and a choice's label is one of its own. A test compiles
+  the generated program against the package on every run. The skill's SDK example teaches the
+  same.
+
+### Changed
+
+- **The API key is checked the way `typesafe-sdk` 0.7 checks it.** Surrounding whitespace is
+  trimmed from an explicit key as well as from `TYPESAFE_API_KEY`, and a key with whitespace,
+  control or non-ASCII characters inside it is a `ConfigError` before anything is sent.
+- **A bad model entry is named by its index:** `models[1].name`, as the Python SDK names it, where
+  it used to be `models.1.name`.
+
+- **`jev check` holds a page to the API's limits.** A score with more than 10 levels or a choice
+  with more than 255 options is now a problem on its line, as the primitives docs set them,
+  instead of a request the API refuses.
+
+### Fixed
+
+- **The skill no longer promises a rationale.** It told agents every answer carries a confidence
+  and a short rationale; a noul's probability is its own confidence, and no answer has a
+  rationale.
+- **A `ConnectionError` no longer quotes the password of a base URL back.** fetch refuses a URL
+  with credentials in it by printing the whole URL; the password, the query and the key are now
+  masked in the error's message and in its cause.
+
 ## 0.7.0
 
 ### Added

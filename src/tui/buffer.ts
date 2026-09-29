@@ -25,7 +25,7 @@ export interface BlockOptions {
   borderStyle?: Style;
 }
 
-export class Buffer {
+export class ScreenBuffer {
   readonly width: number;
   readonly height: number;
   readonly #cells: Cell[];

@@ -675,7 +675,7 @@ async function runCommand(
   let client: Client | undefined;
   if (live) {
     try {
-      client = new Client({ apiKey });
+      client = Client.fromEnv({ apiKey, env });
     } catch (e) {
       err(`${linesText(errorLines(e))}\n`);
       return 1;
@@ -795,7 +795,7 @@ async function runMcp(
   let client: Client | undefined;
   if (live) {
     try {
-      client = new Client({ apiKey });
+      client = Client.fromEnv({ apiKey, env });
     } catch (e) {
       err(`${linesText(errorLines(e))}\n`);
       return 1;
