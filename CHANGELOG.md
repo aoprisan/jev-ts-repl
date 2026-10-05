@@ -3,6 +3,15 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **`onRetry` on the client and on each call.** It is told about each retry (`endpoint`, the
+  `attempt` that failed, `delayMs`, `error`) just before the wait, and never about the failure
+  that ends the call. A throw or a rejection from it is swallowed. The counterpart of
+  `withOnRetry` in the Scala SDK. New types: `RetryEvent`, `OnRetry`.
+
 ## 0.9.0
 
 ### Breaking

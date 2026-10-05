@@ -120,6 +120,8 @@ export type {
   ClientOptions,
   FromEnvOptions,
   ModelsResource,
+  OnRetry,
+  RetryEvent,
 } from "./typesafe/client.js";
 
 // JSON helpers the question and answer shapes are built from.
