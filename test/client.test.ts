@@ -29,6 +29,7 @@ import {
   UserAbortError,
   type Question,
   type Questions,
+  type RetryEvent,
   type SystemOneResponse,
   cassetteKey,
   choice,
@@ -578,6 +579,47 @@ describe("errors and retries", () => {
       }),
     ).rejects.toBeInstanceOf(ApiError);
     expect(calls).toHaveLength(2);
+  });
+
+  it("tells onRetry about each retry, and not about the failure that ends the call", async () => {
+    const { fetch } = stubFetch([() => json({ error: "boom" }, { status: 503 })]);
+    const events: RetryEvent[] = [];
+    await expect(
+      client(fetch, {
+        retry: { maxRetries: 2, backoffInitialMs: 0, backoffMaxMs: 0 },
+        onRetry: (e: RetryEvent) => events.push(e),
+      }).systemOne("x", { a: noul("y") }),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(events.map((e) => [e.attempt, e.delayMs])).toEqual([
+      [1, 0],
+      [2, 0],
+    ]);
+    expect(events[0]?.endpoint).toMatch(/^POST https?:\/\/.+\/v1\/systemone$/);
+    expect(events[0]?.error).toBeInstanceOf(ApiError);
+    expect((events[0]?.error as ApiError).status).toBe(503);
+  });
+
+  it("lets a call replace onRetry, and swallows an observer that throws or rejects", async () => {
+    const answers = () =>
+      stubFetch([() => json({ error: "boom" }, { status: 500 }), () => json(ANSWERS)]).fetch;
+    const seen: string[] = [];
+    const retry = { backoffInitialMs: 0, backoffMaxMs: 0 };
+    const c = client(answers(), { retry, onRetry: () => seen.push("client") });
+    await c.systemOne("x", { a: noul("y") }, { onRetry: () => seen.push("call") });
+    expect(seen).toEqual(["call"]);
+
+    const throwing = client(answers(), {
+      retry,
+      onRetry: () => {
+        throw new Error("broken counter");
+      },
+    });
+    expect((await throwing.systemOne("x", { a: noul("y") })).meta.attempts).toBe(2);
+    const rejecting = client(answers(), {
+      retry,
+      onRetry: () => Promise.reject(new Error("broken counter")),
+    });
+    expect((await rejecting.systemOne("x", { a: noul("y") })).meta.attempts).toBe(2);
   });
 
   it("does not retry a 422", async () => {

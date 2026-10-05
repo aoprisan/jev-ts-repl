@@ -98,4 +98,11 @@ export { cassetteKey, ReplayMissError } from "./cassette.js";
 
 // The client.
 export { Client } from "./client.js";
-export type { CallOptions, ClientOptions, FromEnvOptions, ModelsResource } from "./client.js";
+export type {
+  CallOptions,
+  ClientOptions,
+  FromEnvOptions,
+  ModelsResource,
+  OnRetry,
+  RetryEvent,
+} from "./client.js";

@@ -390,6 +390,21 @@ try {
 }
 ```
 
+The SDK does no logging of its own; `onRetry` is where a logger or a metrics counter hears about
+retries. It is called just before each wait, only when another attempt really is coming, with the
+`endpoint`, the 1-based `attempt` that failed, the `delayMs` before the next one and the `error`.
+Its result is ignored, and a throw or a rejected promise from it is swallowed, so a broken counter
+cannot fail a call. A call's own `onRetry` replaces the client's.
+
+```ts
+const client = Client.fromEnv({
+  onRetry: (e) =>
+    console.warn(
+      `${e.endpoint} attempt ${e.attempt} failed (${e.error.message}); retrying in ${e.delayMs} ms`,
+    ),
+});
+```
+
 Every call takes a `signal` to cancel it from outside, retry waits included. An aborted call
 rejects with a `UserAbortError` whose `cause` is the signal's reason — or a `TimeoutError` when the
 signal came from `AbortSignal.timeout(ms)`:

@@ -72,6 +72,8 @@ export interface ClientOptions {
   timeoutMs?: number;
   /** Default retry policy. */
   retry?: Partial<RetryPolicy>;
+  /** Told about each retry just before its wait starts; see {@link RetryEvent}. */
+  onRetry?: OnRetry;
   /** Extra headers sent with every request. Authentication and SDK headers cannot be overridden. */
   headers?: Record<string, string>;
   /** Replace the `fetch` implementation (tests, proxies, instrumentation). */
@@ -106,6 +108,8 @@ export interface CallOptions {
   timeoutMs?: number;
   /** Override the retry policy for this call. */
   retry?: Partial<RetryPolicy>;
+  /** Replace the client's `onRetry` for this call. */
+  onRetry?: OnRetry;
   /** Add headers for this call (protected headers still win). */
   headers?: Record<string, string>;
   /**
@@ -118,6 +122,38 @@ export interface CallOptions {
    * as its `cause`, or {@link TimeoutError} when the signal timed out (`AbortSignal.timeout(ms)`).
    */
   signal?: AbortSignal;
+}
+
+/**
+ * A failed attempt that will be retried. `attempt` is the 1-based number of the attempt that just
+ * failed, `delayMs` the wait the policy chose before the next one, and `error` what went wrong. An
+ * event is only reported when a further attempt really is coming: the failure that exhausts the
+ * policy is thrown, not announced.
+ */
+export interface RetryEvent {
+  /** The call that failed, method and URL, e.g. `POST https://api.typesafe.ai/v1/systemone`. */
+  endpoint: string;
+  attempt: number;
+  delayMs: number;
+  error: TypeSafeError;
+}
+
+/**
+ * Somewhere to send a {@link RetryEvent}: a logger, a metrics counter. The SDK has no logging of
+ * its own, so this is the seam for one. It is for watching, not deciding: the client ignores its
+ * result, and a throw or a rejected promise from it is swallowed rather than failing the call.
+ */
+export type OnRetry = (event: RetryEvent) => unknown;
+
+/** Calls `onRetry`, so that nothing it does reaches the request. */
+function notify(onRetry: OnRetry | undefined, event: RetryEvent): void {
+  if (onRetry === undefined) return;
+  try {
+    const result = onRetry(event);
+    if (result instanceof Promise) result.catch(() => undefined);
+  } catch {
+    // An observer that fails must not fail a request that was about to be retried.
+  }
 }
 
 /** The Models resource: `client.models.list()`. */
@@ -262,6 +298,7 @@ export class Client {
   readonly #model: string;
   readonly #timeoutMs: number;
   readonly #retry: RetryPolicy;
+  readonly #onRetry: OnRetry | undefined;
   readonly #headers: Record<string, string>;
   readonly #protected: Record<string, string>;
   readonly #fetch: typeof globalThis.fetch;
@@ -312,6 +349,7 @@ export class Client {
     this.#model = options.model ?? DEFAULT_MODEL;
     this.#timeoutMs = checkTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.#retry = retry;
+    this.#onRetry = options.onRetry;
     this.#headers = { ...options.headers };
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#record = record;
@@ -529,6 +567,12 @@ export class Client {
         if (!(error instanceof TypeSafeError) || !isRetryable(retry, error)) throw error;
         const delay = retryDelayMs(retry, attempts, error);
         if (shouldStop(retry, attempts, Date.now() - started, delay)) throw error;
+        notify(options.onRetry ?? this.#onRetry, {
+          endpoint,
+          attempt: attempts,
+          delayMs: delay,
+          error,
+        });
         if (delay > 0) {
           try {
             await sleep(delay, options.signal);
