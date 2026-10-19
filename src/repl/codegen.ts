@@ -68,7 +68,7 @@ export function typescript(session: Session, model: string, threshold: number): 
   lines.push("");
   lines.push("const questions = rubric({");
   for (const q of questions) {
-    used.add(q.kind === "raw" ? "raw" : q.kind);
+    used.add(["noul", "choice", "score", "box"].includes(q.kind) ? q.kind : "raw");
     lines.push(`  ${property(q.name)}: ${builder(q, 2)},`);
   }
   lines.push("});");
@@ -119,6 +119,8 @@ function builder(q: Shaped, indent: number): string {
       if (oneLine.length + indent <= 96) return oneLine;
       return `score(${instructions}, [\n${pad}${levels.join(`,\n${pad}`)},\n${close}])`;
     }
+    case "box":
+      return `box(${instructions})`;
     default:
       return `raw(${compact(q.json)})`;
   }
@@ -166,6 +168,12 @@ function reader(q: Shaped, threshold: number): string[] {
         ];
       }
       return [`const ${variable} = ${access};`, ...scoreLine];
+    case "box":
+      return [
+        `// ${name}: images are experimental — pass them as \`assets\` next to \`model\``,
+        `const ${variable} = ${access};`,
+        `console.log(\`${name}: \${JSON.stringify(${variable}.box)} (confidence \${${variable}.confidence.toFixed(2)})\`);`,
+      ];
     default:
       return [`// ${name}: a raw question — its answer is ${access}, typed as any Answer`];
   }
@@ -210,6 +218,7 @@ export function rust(session: Session, model: string, threshold: number): string
     if (q.kind === "noul") imports.add("Noul");
     else if (q.kind === "choice") imports.add("Choice");
     else if (q.kind === "score") imports.add("Score");
+    else if (q.kind === "box") imports.add("BoxQuestion");
   }
   if (out.includes("json!(")) imports.add("json");
   const list = [...imports].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(", ");
@@ -255,6 +264,8 @@ function rustBuilder(q: Shaped, indent: number): string {
       const levels = Array.isArray(criteria) ? criteria.map((l) => rustLiteral(l)) : [];
       return `Score::new(\n${pad}${instructions},\n${pad}[${levels.join(", ")}],\n${" ".repeat(indent)})`;
     }
+    case "box":
+      return `BoxQuestion::new(${instructions})`;
     default:
       return `json!(${compact(q.json)})`;
   }
@@ -293,6 +304,12 @@ function rustReader(q: Shaped, threshold: number): string {
       return (
         `    let ${name} = res.score(${lookup}).expect("asked");\n` +
         `    println!("${name}: {:.2} of {} (confidence {:.2})", ${name}.score, ${name}.legend.len() - 1, ${name}.confidence);\n`
+      );
+    case "box":
+      return (
+        `    // ${name}: images are experimental — add them with .image(reference, Image)\n` +
+        `    let ${name} = res.box_answer(${lookup}).expect("asked");\n` +
+        `    println!("${name}: {:?} (confidence {:.2})", ${name}.bounds, ${name}.confidence);\n`
       );
     default:
       return `    // ${name}: a raw question — read it from res.raw\n`;

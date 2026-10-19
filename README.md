@@ -450,6 +450,39 @@ label outside the choice is a `ResponseValidationError` whose `fieldPath` names 
 response you already have, and recording and replaying work as they do for `systemOne`. It is
 this package's `response_model` from the Python SDK, and `#[derive(Rubric)]` from the Rust one.
 
+### Images, box questions and long context (experimental)
+
+Jev 1.14 (released 2026-10-14) puts three features in a _danger zone_: they work, but TypeSafe does
+not call them production-ready, and each is opt-in by header. The client sends the header for you.
+
+- **Images** (Jev 1.13 and later): PNG or JPEG, 256 to 1568 pixels a side. Each image goes into
+  the call once, in `assets` under a reference string you choose, and the model sees it wherever
+  that reference is written — in the state, an instruction or a criterion. A call with an image is
+  sent with `TypeSafe-Danger-Zone-Images: true`, and one whose image nothing refers to is refused
+  before sending.
+- **Box questions** (Jev 1.14 only: `jev-1.14.0` or `jev-preview`): `box(...)` locates one thing
+  in an image and answers with a box — `top`, `bottom`, `left`, `right`, as fractions of the image
+  from its top-left corner — and a `confidence`. They need the images header too. A page writes one
+  as a raw question: `door! {"type": "box", "instructions": "the front door in photo"}`.
+- **Long context**: 262k tokens per request and per question, up from 64k and 32k, with
+  `TypeSafe-Danger-Zone-Long-Context: true`. Slower and less accurate; turn it on for a client with
+  `{ longContext: true }`, or for one call in its options.
+
+```ts
+import { readFile } from "node:fs/promises";
+import { box, Client, image, noul } from "jev-repl";
+
+const res = await Client.fromEnv().systemOne(
+  { photo: "photo", caption: "Our new office" },
+  { has_people: noul("photo shows at least one person"), door: box("the front door in photo") },
+  { model: "jev-1.14.0", assets: { photo: image(await readFile("office.jpg")) } },
+);
+res.box("door")?.box; // { top, bottom, left, right }
+```
+
+`jev-latest` moves from Jev 1.13.0 to 1.14.0 a week after the release; pin `jev-1.13.0` to stay
+where you are. The cassette key covers `assets`, but not the long-context header.
+
 ### Recording and replaying
 
 A test that talks to the API costs money, needs a key and answers differently tomorrow. Record the
@@ -469,7 +502,7 @@ const client = new Client({ replay: "test/cassettes" }); // or { record: "test/c
 ```
 
 The key is the SHA-256 of the compact request body — `{ state, model, questions }`, in that
-order, plus anything `extraBody` adds — so a different state, model or question is a different
+order, then `assets` when there are images, plus anything `extraBody` adds — so a different state, model or question is a different
 file. A request with no recording throws `ReplayMissError`, carrying the `key` and the `path` it
 looked for; a replay never falls back to the network or to simulated answers, because a test that
 quietly goes live is not the test you wrote. Setting both is a `ConfigError`, and so is

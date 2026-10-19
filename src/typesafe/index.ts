@@ -39,8 +39,13 @@ export {
 } from "./errors.js";
 export type { ApiErrorKind, ResponseHeaders } from "./errors.js";
 
+// Images, for the experimental image input.
+export { image, imageBase64 } from "./assets.js";
+export type { Asset, Assets, ImageAsset, ImageFormat } from "./assets.js";
+
 // Questions and their wire form.
 export {
+  box,
   choice,
   noul,
   questionFromJson,
@@ -51,6 +56,7 @@ export {
   withOption,
 } from "./questions.js";
 export type {
+  BoxQuestion,
   ChoiceOption,
   ChoiceQuestion,
   NoulCriteria,
@@ -67,6 +73,8 @@ export type {
   Answer,
   AnswerNames,
   AnswerNamesOf,
+  BoundingBox,
+  BoxAnswer,
   ChoiceAnswer,
   ListModelsResponse,
   ModelMetadata,

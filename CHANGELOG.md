@@ -3,6 +3,28 @@
 Notable changes to `jev-repl`. Versions follow [semver](https://semver.org): the package is
 pre-1.0, so a minor bump may still move the surface under you.
 
+## Unreleased
+
+### Added
+
+- **Jev 1.14's danger zone: images, box questions and long context.** All three are experimental
+  and opt-in by header; the client sends the header when a call needs it.
+  - `image(bytes)` / `imageBase64(data, format)` and the `assets` call option send PNG or JPEG
+    images under a reference written in the state or the questions, with
+    `TypeSafe-Danger-Zone-Images: true`. An image nothing refers to is an `InvalidRequestError`.
+  - `box(instructions)` asks where something is in an image (Jev 1.14); `res.box(name)` and a
+    rubric's typed answer read back a `BoxAnswer` — a `BoundingBox` and a `confidence`.
+  - `longContext` on the client and on each call sends `TypeSafe-Danger-Zone-Long-Context: true`.
+  - New types: `BoxQuestion`, `BoxAnswer`, `BoundingBox`, `ImageAsset`, `Asset`, `Assets`,
+    `ImageFormat`. `AnswerNames` gains `box`.
+- The REPL shows box answers, simulates them offline, writes them into `jev ts` and `jev rust`
+  programs, and lists `jev-1.14.0` and `jev-preview` among the offline models. A page writes a box
+  as a raw question.
+
+### Fixed
+
+- `jev ts` no longer imports a builder named after a raw question's type.
+
 ## 0.10.0
 
 ### Added

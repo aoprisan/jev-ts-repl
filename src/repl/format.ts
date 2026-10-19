@@ -127,6 +127,31 @@ export function answerLines(name: string, answer: Answer, threshold: number): Li
         ]),
       );
     }
+  } else if (answer.type === "box") {
+    const { top, bottom, left, right } = answer.box;
+    out.push(
+      line([
+        span("    "),
+        span(
+          `top ${fixed(top)}  bottom ${fixed(bottom)}  left ${fixed(left)}  right ${fixed(right)}`,
+          {
+            fg: SCORE,
+            bold: true,
+          },
+        ),
+        span("   "),
+        dim("confidence "),
+        confidenceSpan(answer.confidence),
+      ]),
+    );
+    out.push(
+      line([
+        span("    "),
+        dim(
+          `${Math.round((right - left) * 100)}% wide, ${Math.round((bottom - top) * 100)}% tall, from the top-left corner`,
+        ),
+      ]),
+    );
   } else {
     const levels = [...answer.legend.keys()];
     const top = levels.length > 0 ? (levels[levels.length - 1] as number) : 0;

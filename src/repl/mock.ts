@@ -60,6 +60,18 @@ export function answer(state: Json, name: string, question: Json): Answer | unde
       probabilities,
     };
   }
+  if (kind === "box") {
+    // A box somewhere inside the image, at least a tenth of it on each side.
+    const left = round(0.6 * unit([seed, "left"]));
+    const top = round(0.6 * unit([seed, "top"]));
+    const right = round(left + 0.1 + (0.9 - left) * unit([seed, "right"]));
+    const bottom = round(top + 0.1 + (0.9 - top) * unit([seed, "bottom"]));
+    return {
+      type: "box",
+      box: { top, bottom, left, right },
+      confidence: round(0.3 + 0.65 * unit([seed, "box"])),
+    };
+  }
   return undefined;
 }
 
@@ -71,6 +83,12 @@ export function models(): ModelMetadata[] {
       description: "Alias for the newest jev release",
       releaseDate: "2026-05-01",
     },
+    {
+      name: "jev-1.14.0",
+      description: "Images, box questions and long context, behind opt-in headers",
+      releaseDate: "2026-10-14",
+    },
+    { name: "jev-preview", description: "Alias for the newest preview", releaseDate: "2026-10-14" },
     { name: "jev-2", description: "Previous generation", releaseDate: "2025-11-12" },
   ];
 }
@@ -156,6 +174,8 @@ export function mockBody(
         probabilities: { ...a.probabilities },
         confidence: a.confidence,
       };
+    } else if (a.type === "box") {
+      map[name] = { type: "box", box: { ...a.box }, confidence: a.confidence };
     } else {
       map[name] = {
         type: "score",

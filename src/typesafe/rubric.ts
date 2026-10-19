@@ -24,11 +24,18 @@
  */
 
 import { ResponseValidationError } from "./errors.js";
-import type { ChoiceQuestion, NoulQuestion, Question, ScoreQuestion } from "./questions.js";
+import type {
+  BoxQuestion,
+  ChoiceQuestion,
+  NoulQuestion,
+  Question,
+  ScoreQuestion,
+} from "./questions.js";
 import { questionType } from "./questions.js";
 import type {
   Answer,
   AnswerNamesOf,
+  BoxAnswer,
   ChoiceAnswer,
   NoulAnswer,
   ScoreAnswer,
@@ -53,7 +60,9 @@ export type AnswerTo<Q extends Question> = Q extends NoulQuestion
     ? ChoiceAnswerOf<L>
     : Q extends ScoreQuestion
       ? ScoreAnswer
-      : Answer;
+      : Q extends BoxQuestion
+        ? BoxAnswer
+        : Answer;
 
 /** Named questions whose answers are typed by name. */
 export type RubricQuestions = Readonly<Record<string, Question>>;
@@ -100,7 +109,8 @@ function check(response: SystemOneResponse, name: string, question: Question): A
     throw mismatch(response, `answers.${name}`, `missing ${article(expected)} answer`);
   }
   // A raw question declares its own type, which may be one this SDK version does not know.
-  const known = expected === "noul" || expected === "choice" || expected === "score";
+  const known =
+    expected === "noul" || expected === "choice" || expected === "score" || expected === "box";
   if (known && answer.type !== expected) {
     throw mismatch(
       response,
