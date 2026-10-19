@@ -29,6 +29,7 @@ import {
   mock,
   noul,
   PRESETS,
+  questionToJson,
   score,
   seed,
   Session,
@@ -452,7 +453,7 @@ function card(session: SessionType, name: string, question: Question, index: num
       ),
     );
   } else {
-    body.push(h("pre", { class: "raw" }, [compact(question.value)]));
+    body.push(h("pre", { class: "raw" }, [compact(questionToJson(question))]));
   }
 
   if (kind !== "raw") {

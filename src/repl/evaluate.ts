@@ -270,6 +270,8 @@ function expected(
       }
       return ok({ kind: "score", level: at });
     }
+    case "box":
+      return err(`${name} is a box question: boxes cannot be scored yet.`);
     case "raw":
       return err(`${name} is a raw question: raw questions cannot be scored.`);
   }
@@ -1282,7 +1284,7 @@ export function compare(
   for (const [name, question] of a.session.questions) {
     const other = kindsB.get(name);
     if (other === undefined) continue;
-    if (other !== question.kind || question.kind === "raw") {
+    if (other !== question.kind || question.kind === "raw" || question.kind === "box") {
       if (other !== question.kind) mismatched.push({ name, a: question.kind, b: other });
       continue;
     }

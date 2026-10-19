@@ -659,7 +659,10 @@ export function setBars(text: string, bars: ReadonlyMap<string, number>): string
 }
 
 function renderQuestion(name: string, question: Question): string {
-  if (question.kind === "raw") return `${name}! ${compact(question.value)}\n`;
+  // The notation has no line of its own for a box yet, so it is written as the object it sends.
+  if (question.kind === "raw" || question.kind === "box") {
+    return `${name}! ${compact(questionToJson(question))}\n`;
+  }
   const v = questionToJson(question);
   const obj = typeof v === "object" && v !== null && !Array.isArray(v) ? v : {};
   const instructions = part(obj["instructions"]);

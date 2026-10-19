@@ -37,8 +37,24 @@ export interface ScoreAnswer {
   readonly probabilities: ReadonlyMap<number, number>;
 }
 
+/** Edges of a box, as fractions of the image's height and width from its top-left corner. */
+export interface BoundingBox {
+  readonly top: number;
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+}
+
+/** Where a box question's thing is in the image. Experimental, Jev 1.14 and later. */
+export interface BoxAnswer {
+  readonly type: "box";
+  readonly box: BoundingBox;
+  /** Certainty of the box, 0 to 1. */
+  readonly confidence: number;
+}
+
 /** An answer to one question. */
-export type Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
+export type Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer | BoxAnswer;
 
 /** `noul >= threshold`. */
 export function isYes(answer: NoulAnswer, threshold: number): boolean {
@@ -111,6 +127,7 @@ export interface AnswerNames {
   readonly noul: string;
   readonly choice: string;
   readonly score: string;
+  readonly box: string;
 }
 
 /** The {@link AnswerNames} of a set of questions: each lookup takes the names of its own kind. */
@@ -118,11 +135,12 @@ export interface AnswerNamesOf<Q extends Questions> extends AnswerNames {
   readonly noul: QuestionName<Q, "noul">;
   readonly choice: QuestionName<Q, "choice">;
   readonly score: QuestionName<Q, "score">;
+  readonly box: QuestionName<Q, "box">;
 }
 
 /**
  * The result of a System One call. `N` names what each typed lookup accepts: for a call whose
- * questions' names are known, `noul`, `choice` and `score` only take the names of questions of
+ * questions' names are known, `noul`, `choice`, `score` and `box` only take the names of questions of
  * that kind; otherwise any string.
  */
 export interface SystemOneResponse<N extends AnswerNames = AnswerNames> {
@@ -147,6 +165,8 @@ export interface SystemOneResponse<N extends AnswerNames = AnswerNames> {
   choice(name: N["choice"]): ChoiceAnswer | undefined;
   /** The answer to `name`, if it is a score. */
   score(name: N["score"]): ScoreAnswer | undefined;
+  /** The answer to `name`, if it is a box. */
+  box(name: N["box"]): BoxAnswer | undefined;
 }
 
 /** One available model. */
@@ -258,6 +278,20 @@ function decodeAnswer(value: Json, prefix: string): Answer | undefined {
           requireNumber(v, p),
         ),
       };
+    case "box": {
+      const path = at(prefix, "box");
+      const edges = requireObject(obj["box"], path);
+      return {
+        type: "box",
+        box: {
+          top: requireNumber(edges["top"], at(path, "top")),
+          bottom: requireNumber(edges["bottom"], at(path, "bottom")),
+          left: requireNumber(edges["left"], at(path, "left")),
+          right: requireNumber(edges["right"], at(path, "right")),
+        },
+        confidence: requireNumber(obj["confidence"], at(prefix, "confidence")),
+      };
+    }
     default:
       // An answer type this version does not model: it stays visible in `raw`.
       return undefined;
@@ -286,6 +320,7 @@ export function makeSystemOneResponse<N extends AnswerNames = AnswerNames>(
     noul: (name: string) => typed<NoulAnswer>(name, "noul"),
     choice: (name: string) => typed<ChoiceAnswer>(name, "choice"),
     score: (name: string) => typed<ScoreAnswer>(name, "score"),
+    box: (name: string) => typed<BoxAnswer>(name, "box"),
   };
 }
 

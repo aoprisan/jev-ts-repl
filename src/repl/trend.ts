@@ -89,6 +89,8 @@ export function series(
         label,
       };
     }
+    // A box has no single value to follow from turn to turn.
+    if (last.type !== "score") return missing;
     const top = Math.max(0, last.legend.size - 1);
     return {
       name,

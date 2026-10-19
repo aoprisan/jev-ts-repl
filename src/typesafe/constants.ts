@@ -32,6 +32,10 @@ export const SDK_HEADER = "x-typesafe-sdk";
 export const RUNTIME_HEADER = "x-typesafe-runtime";
 export const RETRY_COUNT_HEADER = "x-typesafe-retry-count";
 export const REQUEST_ID_HEADER = "x-typesafe-request-id";
+/** Opts a call into images and box questions (Jev 1.13+, experimental). */
+export const IMAGES_HEADER = "typesafe-danger-zone-images";
+/** Opts a call into 262k-token context, from 64k per request and 32k per question (experimental). */
+export const LONG_CONTEXT_HEADER = "typesafe-danger-zone-long-context";
 export const RETRY_AFTER_HEADER = "retry-after";
 export const RETRY_AFTER_MS_HEADER = "retry-after-ms";
 

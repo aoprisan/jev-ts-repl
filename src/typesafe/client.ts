@@ -10,6 +10,8 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_ENV,
   DEFAULT_TIMEOUT_MS,
+  IMAGES_HEADER,
+  LONG_CONTEXT_HEADER,
   MODELS_PATH,
   RECORD_ENV,
   REPLAY_ENV,
@@ -32,6 +34,8 @@ import {
   TimeoutError,
   TypeSafeError,
 } from "./errors.js";
+import type { Assets } from "./assets.js";
+import { assetsToJson, validateAssets } from "./assets.js";
 import type { Questions } from "./questions.js";
 import { questionsToJson, validateQuestions } from "./questions.js";
 import type {
@@ -76,6 +80,11 @@ export interface ClientOptions {
   onRetry?: OnRetry;
   /** Extra headers sent with every request. Authentication and SDK headers cannot be overridden. */
   headers?: Record<string, string>;
+  /**
+   * Opt every `systemOne` call into long context (262k tokens) with
+   * `TypeSafe-Danger-Zone-Long-Context: true`. Experimental: slower and less accurate.
+   */
+  longContext?: boolean;
   /** Replace the `fetch` implementation (tests, proxies, instrumentation). */
   fetch?: typeof globalThis.fetch;
   /**
@@ -113,8 +122,15 @@ export interface CallOptions {
   /** Add headers for this call (protected headers still win). */
   headers?: Record<string, string>;
   /**
-   * Add top-level body fields. A key named `state`, `model` or `questions` replaces the standard
-   * field. Useful for API fields this SDK version does not model yet.
+   * Images for this call, by the reference written where each one belongs (see {@link image}).
+   * Experimental: sends `TypeSafe-Danger-Zone-Images: true`, as a box question does.
+   */
+  assets?: Assets;
+  /** Opt this call in or out of long context, whatever the client's `longContext` says. */
+  longContext?: boolean;
+  /**
+   * Add top-level body fields. A key named `state`, `model`, `questions` or `assets` replaces the
+   * standard field. Useful for API fields this SDK version does not model yet.
    */
   extraBody?: JsonObject;
   /**
@@ -237,6 +253,23 @@ function encodeState(state: unknown): Json {
   return JSON.parse(text) as Json;
 }
 
+/** Whether a body carries images or asks a box question: what the images opt-in covers. */
+function usesImages(body: JsonObject): boolean {
+  const assets = body["assets"];
+  if (assets !== undefined && assets !== null) return true;
+  const questions = body["questions"];
+  if (questions === null || typeof questions !== "object" || Array.isArray(questions)) return false;
+  return Object.values(questions).some(
+    (q) => q !== null && typeof q === "object" && !Array.isArray(q) && q["type"] === "box",
+  );
+}
+
+function lowercased(headers: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) out[key.toLowerCase()] = value;
+  return out;
+}
+
 function checkBaseUrl(url: string): void {
   let parsed: URL;
   try {
@@ -304,6 +337,7 @@ export class Client {
   readonly #fetch: typeof globalThis.fetch;
   readonly #record: string | undefined;
   readonly #replay: string | undefined;
+  readonly #longContext: boolean;
 
   /** The Models resource. */
   readonly models: ModelsResource;
@@ -354,6 +388,7 @@ export class Client {
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#record = record;
     this.#replay = replay;
+    this.#longContext = options.longContext ?? false;
     const ident = `${SDK_NAME}/${VERSION}`;
     this.#protected = {
       authorization: `Bearer ${apiKey ?? ""}`,
@@ -431,7 +466,21 @@ export class Client {
     if (!("state" in extra)) body["state"] = encodeState(state);
     if (!("model" in extra)) body["model"] = options.model ?? this.#model;
     if (!("questions" in extra)) body["questions"] = questionsToJson(questions);
+    const assets = options.assets ?? {};
+    if (Object.keys(assets).length > 0 && !("assets" in extra)) {
+      validateAssets(assets, body["state"] ?? null, body["questions"] ?? null);
+      body["assets"] = assetsToJson(assets);
+    }
     Object.assign(body, extra);
+    // The danger-zone opt-ins, under any header of the same name set by hand.
+    const optIn: Record<string, string> = {};
+    if (usesImages(body)) optIn[IMAGES_HEADER] = "true";
+    if (options.longContext ?? this.#longContext) optIn[LONG_CONTEXT_HEADER] = "true";
+    for (const key of Object.keys(lowercased(this.#headers))) delete optIn[key];
+    const sendOptions =
+      Object.keys(optIn).length === 0
+        ? options
+        : { ...options, headers: { ...optIn, ...lowercased(options.headers) } };
 
     if (this.#replay !== undefined) {
       if (options.signal?.aborted) throw abortError(options.signal);
@@ -441,7 +490,12 @@ export class Client {
       return this.#decodeSystemOne<Q>(text, meta, `replay ${this.#replay}`);
     }
 
-    const { text, meta, endpoint } = await this.#execute("POST", SYSTEM_ONE_PATH, body, options);
+    const { text, meta, endpoint } = await this.#execute(
+      "POST",
+      SYSTEM_ONE_PATH,
+      body,
+      sendOptions,
+    );
     const response = this.#decodeSystemOne<Q>(text, meta, endpoint);
     if (this.#record !== undefined) {
       // The same bytes `jev eval --cache` keeps, so either one can read the other's directory.

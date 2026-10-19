@@ -1,5 +1,5 @@
 /**
- * Typed questions: noul, choice and score.
+ * Typed questions: noul, choice, score and box.
  *
  * Instructions, option descriptions and score levels accept any JSON value (a string, or an
  * object/array for structured rubrics), per the API's "advanced structure" support.
@@ -44,6 +44,17 @@ export interface ScoreQuestion {
   readonly levels: readonly Json[];
 }
 
+/**
+ * Locate one thing in an image; the answer is a bounding box. Jev 1.14 (`jev-1.14.0`,
+ * `jev-preview`) and later only, and experimental: the client sends the
+ * `TypeSafe-Danger-Zone-Images: true` header for any call that asks one. A box question has
+ * instructions and no criteria.
+ */
+export interface BoxQuestion {
+  readonly kind: "box";
+  readonly instructions?: Json;
+}
+
 /** A hand-built JSON question object, for fields this SDK version does not model yet. */
 export interface RawQuestion {
   readonly kind: "raw";
@@ -51,7 +62,7 @@ export interface RawQuestion {
 }
 
 /** Any question. */
-export type Question = NoulQuestion | ChoiceQuestion | ScoreQuestion | RawQuestion;
+export type Question = NoulQuestion | ChoiceQuestion | ScoreQuestion | BoxQuestion | RawQuestion;
 
 /** Named questions, in the order they will be sent. Answers come back under the same names. */
 export type Questions =
@@ -90,6 +101,11 @@ export function choice<const L extends string = string>(
 /** A score over ordered levels, lowest first. */
 export function score(instructions: Json, levels: readonly Json[]): ScoreQuestion {
   return { kind: "score", instructions, levels };
+}
+
+/** Where in the image `instructions` points, as a bounding box. Experimental; see {@link BoxQuestion}. */
+export function box(instructions: Json): BoxQuestion {
+  return { kind: "box", instructions };
 }
 
 /** A question object sent as it is; it needs a non-empty string `type`. */
@@ -138,6 +154,11 @@ export function questionToJson(q: Question): Json {
       out["criteria"] = q.levels.slice();
       return out;
     }
+    case "box": {
+      const out: JsonObject = { type: "box" };
+      if (q.instructions !== undefined) out["instructions"] = q.instructions;
+      return out;
+    }
     case "raw":
       return q.value;
   }
@@ -177,9 +198,16 @@ export function questionFromJson(v: Json): Question {
         instructions: instructions ?? null,
         levels: Array.isArray(criteria) ? criteria : [],
       };
+    case "box":
+      return { kind: "box", instructions: instructions ?? null };
     default:
       return raw(v);
   }
+}
+
+/** Whether any of the questions is a box, which only the images opt-in may ask. */
+export function asksBox(questions: Questions): boolean {
+  return questionEntries(questions).some(([, q]) => questionType(q) === "box");
 }
 
 /** Named questions as ordered pairs, whichever shape they were given in. */
